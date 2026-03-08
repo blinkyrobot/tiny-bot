@@ -1,0 +1,126 @@
+/* General Styling */
+body {
+    font-family: Arial, sans-serif;
+    margin: 0;
+    padding: 20px;
+    background-color: #f4f4f4;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+}
+
+.container {
+    background-color: #fff;
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+    width: 100%;
+    max-width: 800px;
+    display: flex;
+    flex-direction: column;
+    max-height: 90vh;
+}
+
+h1 {
+    text-align: center;
+    color: #333;
+}
+
+/* Chat Window */
+#chat-window {
+    border: 1px solid #ddd;
+    padding: 10px;
+    height: 400px;
+    overflow-y: auto;
+    margin-bottom: 10px;
+    background-color: #e9e9e9;
+    border-radius: 4px;
+    flex-grow: 1;
+}
+
+/* Message Container */
+.message-container {
+    display: flex;
+    align-items: flex-start;
+    margin-bottom: 8px;
+    padding: 5px 10px;
+    border-radius: 5px;
+    word-wrap: break-word;
+}
+
+.message-container.user {
+    justify-content: flex-end;
+    background-color: #dcf8c6;
+    margin-left: 20%;
+}
+
+.message-container.bot {
+    justify-content: flex-start;
+    background-color: #f1f0f0;
+    margin-right: 20%;
+}
+
+/* Avatar Styling */
+.avatar {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    margin-right: 10px;
+    object-fit: cover;
+}
+
+/* Message Content */
+.message-content {
+    flex-grow: 1;
+    white-space: pre-wrap; /* Added for correct rendering of agent responses with newlines */
+}
+
+/* Chat Form */
+#chat-form {
+    display: flex;
+    margin-top: 10px;
+}
+
+#user-input {
+    flex-grow: 1;
+    padding: 10px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    margin-right: 10px;
+    font-size: 16px;
+    white-space: pre-wrap; 
+    overflow-wrap: break-word; 
+    resize: none; /* Disable manual resizing */
+    overflow-y: hidden; /* Hide overflow to make it feel more like an input */
+    min-height: 20px;
+    line-height: 1.5;
+}
+
+#chat-form button {
+    padding: 10px 15px;
+    background-color: #007bff;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 16px;
+}
+
+#chat-form button:hover {
+    background-color: #0056b3;
+}
+
+/* Status Bar */
+#status {
+    margin-top: 10px;
+    text-align: center;
+    font-size: 0.9em;
+    color: #666;
+}
+
+/* Think Tag Styling */
+think {
+    color: lightgray;
+    font-style: italic;
+}

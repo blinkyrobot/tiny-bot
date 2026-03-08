@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TinyBot Web Interface</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>TinyBot Web Interface</h1>
+        <div id="chat-window"></div>
+        <form id="chat-form">
+            <textarea id="user-input" placeholder="Type your message or command..." rows="1" autofocus></textarea>
+            <div class="button-group">
+                <button type="submit">Send</button>
+                <button type="button" id="shutdown-btn" class="danger">Shutdown</button>
+            </div>
+        </form>
+        <div id="status">Active Agent: <span id="active-agent">Loading...</span></div>
+    </div>
+
+    <script>
+        const chatWindow = document.getElementById('chat-window');
+        const chatForm = document.getElementById('chat-form');
+        const userInput = document.getElementById('user-input');
+        const activeAgentSpan = document.getElementById('active-agent');
+        const shutdownBtn = document.getElementById('shutdown-btn');
+
+        function appendMessage(sender, message, avatarUrl = null, isHtml = false) {
+
+            const messageContainer = document.createElement('div');
+            messageContainer.classList.add('message-container', sender);
+
+            if (avatarUrl && sender === 'bot') {
+                const avatarImg = document.createElement('img');
+                avatarImg.src = avatarUrl;
+                avatarImg.classList.add('avatar');
+                messageContainer.appendChild(avatarImg);
+            }
+
+            const messageElement = document.createElement('div');
+            messageElement.classList.add('message-content');
+            if (isHtml) {
+                messageElement.innerHTML = message;
+            } else {
+                messageElement.textContent = message;
+            }
+            messageContainer.appendChild(messageElement);
+
+            chatWindow.appendChild(messageContainer);
+            chatWindow.scrollTop = chatWindow.scrollHeight; // Auto-scroll to the bottom
+        }
+
+        async function sendMessage() {
+            const message = userInput.value.trim();
+            if (!message) return;
+
+            appendMessage('user', message);
+            userInput.value = '';
+            userInput.style.height = 'auto'; // Reset height after sending
+
+            try {
+                const response = await fetch('/chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ message: message }),
+                });
+                const data = await response.json();
+                appendMessage('bot', data.response, data.avatar_url, true);
+                activeAgentSpan.textContent = data.active_agent;
+                
+                if (data.response && data.response.includes('EXIT:')) {
+                    appendMessage('bot', '<strong>SERVER SHUTTING DOWN...</strong>', data.avatar_url, true);
+                    userInput.disabled = true;
+                    chatForm.querySelector('button[type="submit"]').disabled = true;
+                    shutdownBtn.disabled = true;
+                }
+            } catch (error) {
+                console.error('Error sending message:', error);
+                appendMessage('bot', 'Error communicating with TinyBot.', null, true);
+            }
+        }
+
+        async function shutdownServer() {
+            if (!confirm("Are you sure you want to SHUT DOWN the TinyBot server? *clank*")) return;
+            
+            appendMessage('user', '/shutdown (UI Button)');
+            try {
+                const response = await fetch('/shutdown', { method: 'POST' });
+                const data = await response.json();
+                appendMessage('bot', data.response, "/static/avatars/blinky.png", true);
+                appendMessage('bot', '<strong>SERVER SHUTDOWN INITIATED.</strong> Close this tab.', "/static/avatars/blinky.png", true);
+                userInput.disabled = true;
+                chatForm.querySelector('button[type="submit"]').disabled = true;
+                shutdownBtn.disabled = true;
+            } catch (error) {
+                console.error('Error shutting down server:', error);
+                appendMessage('bot', 'Error communicating shutdown to server.', null, true);
+            }
+        }
+
+        shutdownBtn.addEventListener('click', shutdownServer);
+
+        async function fetchStatus() { // New function to fetch only the status
+            try {
+                const response = await fetch('/status');
+                const data = await response.json();
+                activeAgentSpan.textContent = data.active_agent;
+            } catch (error) {
+                console.error('Error fetching status:', error);
+                activeAgentSpan.textContent = 'Error';
+            }
+        }
+
+        async function fetchHistory() {
+            // Temporary hardcoded avatar for bot messages in history
+            const BOT_AVATAR_URL = "/static/avatars/blinky.png"; 
+
+            try {
+                const response = await fetch('/history');
+                const data = await response.json();
+                chatWindow.innerHTML = ''; // Clear existing messages
+                data.history.forEach(item => {
+                    const avatar = item.role === 'bot' ? BOT_AVATAR_URL : null;
+                    appendMessage(item.role === 'user' ? 'user' : 'bot', item.content, avatar, true);
+                });
+                fetchStatus(); // Fetch and update active agent after history
+            } catch (error) {
+                console.error('Error fetching history:', error);
+                appendMessage('bot', 'Error loading chat history.', null, true);
+            }
+        }
+
+        chatForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            sendMessage();
+        });
+
+        // Auto-resize textarea
+        userInput.addEventListener('input', function() {
+            this.style.height = 'auto';
+            this.style.height = (this.scrollHeight) + 'px';
+        });
+
+        // Handle Enter key for sending, Shift+Enter for new line
+        userInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+
+        // Fetch history and initial state when the page loads
+        document.addEventListener('DOMContentLoaded', () => {
+            fetchHistory();
+            appendMessage('bot', 'Welcome to TinyBot Web Interface! Type your message or command.', "/static/avatars/blinky.png", true);
+            // Initial active agent will be set by fetchHistory calling fetchStatus
+        });
+    </script>
+</body>
+</html>
