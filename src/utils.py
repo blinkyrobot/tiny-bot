@@ -2,9 +2,23 @@ import json
 import os
 import re
 from datetime import datetime
+from dotenv import load_dotenv
+
+def load_secrets():
+    """Loads secrets from the .env file."""
+    tinybot_root = os.environ.get("TINYBOT_ROOT", os.path.expanduser("~/.tinybot"))
+    secrets_path = os.path.join(tinybot_root, "secrets/api_keys.env")
+    if os.path.exists(secrets_path):
+        load_dotenv(secrets_path)
+    else:
+        # Fallback to local secrets if not in home dir
+        local_secrets = os.path.join(os.getcwd(), "secrets/api_keys.env")
+        if os.path.exists(local_secrets):
+            load_dotenv(local_secrets)
 
 def load_config():
     """Loads the main configuration file."""
+    load_secrets() # Ensure secrets are loaded into environment
     try:
         tinybot_root = os.environ.get("TINYBOT_ROOT", ".")
         config_path = os.path.join(tinybot_root, "config.json")
@@ -26,10 +40,30 @@ def setup_logger(config, is_web_interface=False):
     os.makedirs(os.path.dirname(full_log_path), exist_ok=True)
     return full_log_path
 
-def log_message(log_file, role, message, agent_name=None):
-    """Logs a message to the transcript."""
+def log_debug(message, agent_name=None):
+    """Logs a debug message to the debug log file."""
+    tinybot_root = os.environ.get("TINYBOT_ROOT", ".")
+    debug_log_path = os.path.join(tinybot_root, "logs", "debug.log")
+    os.makedirs(os.path.dirname(debug_log_path), exist_ok=True)
+    
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     role_prefix = f"[{agent_name}] " if agent_name else ""
-    with open(log_file, "a") as f: f.write(f'**{role_prefix}{role.upper()}**: {json.dumps(message)}\n\n')
+    
+    with open(debug_log_path, "a") as f:
+        f.write(f"[{timestamp}] {role_prefix}DEBUG: {json.dumps(message, default=str)}\n")
+
+def log_message(log_file, role, message, agent_name=None):
+    """Logs a clean message to the transcript."""
+    # Ensure we only log string content to the transcript
+    if not isinstance(message, str):
+        # If it's not a string, it's likely internal state or tool output we don't want in the clean transcript
+        # We'll log it to debug instead and return
+        log_debug(message, agent_name)
+        return
+
+    role_prefix = f"[{agent_name}] " if agent_name else ""
+    with open(log_file, "a") as f: 
+        f.write(f'**{role_prefix}{role.upper()}**: {message}\n\n')
 
 def discover_agents():
     """Scans the /agents directory for agent definitions."""
