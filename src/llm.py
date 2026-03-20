@@ -1,7 +1,7 @@
 import json
 import requests
 from datetime import datetime
-from utils import log_message
+from utils import log_debug, log_message
 
 GEMINI_TOTAL_TOKENS = 0
 GEMINI_CACHED_TOKENS = 0
@@ -40,15 +40,13 @@ def call_llm(model_config, messages, tools, supports_tools=True, debug=False, lo
         
         if debug:
             print(f"DEBUG (call_llm/openai): Payload sent: {json.dumps(payload, indent=2)}")
-            if log_file:
-                log_message(log_file, "debug", f"OpenAI Payload: {json.dumps(payload, indent=2)}")
+            log_debug(f"OpenAI Payload: {json.dumps(payload, indent=2)}")
 
         try:
             response = requests.post(base_url, json=payload, headers=headers, timeout=120)
             if debug:
                 print(f"DEBUG (call_llm/openai): Raw API response: {response.text}")
-                if log_file:
-                    log_message(log_file, "debug", f"OpenAI Raw Response: {response.text}")
+                log_debug(f"OpenAI Raw Response: {response.text}")
             response.raise_for_status()
             res_json = response.json()
             if debug and 'usage' in res_json:
@@ -133,27 +131,24 @@ def call_llm(model_config, messages, tools, supports_tools=True, debug=False, lo
             payload["tools"] = [{"function_declarations": [t['function'] for t in tools]}]
         
         if debug:
-            print(f"DEBUG (call_llm/gemini): Payload sent: {json.dumps(payload, indent=2)}")
-            if log_file:
-                log_message(log_file, "debug", f"Gemini Payload: {json.dumps(payload, indent=2)}")
-        
+            print(f"DEBUG (call_llm/gemini): Payload sent to Google API.")
+            log_debug(f"Gemini Payload: {json.dumps(payload, indent=2)}")
+
         try:
             response = requests.post(f"{base_url}?key={api_key}", json=payload, headers=headers, timeout=120)
             if debug:
                 print(f"DEBUG (call_llm/gemini): Raw API response: {response.text}")
-                if log_file:
-                    log_message(log_file, "debug", f"Gemini Raw Response: {response.text}")
+                log_debug(f"Gemini Raw Response: {response.text}")
             response.raise_for_status()
             res_json = response.json()
-            
+
             usage = res_json.get('usageMetadata') or res_json.get('usage_metadata')
             if usage:
                 GEMINI_TOTAL_TOKENS += usage.get('totalTokenCount', 0)
                 GEMINI_CACHED_TOKENS += usage.get('cachedContentTokenCount', 0)
                 if debug:
                     print(f"DEBUG (call_llm/gemini): Usage Metadata: {json.dumps(usage, indent=2)}")
-                    if log_file:
-                        log_message(log_file, "debug", f"Gemini Usage Metadata: {json.dumps(usage, indent=2)}")
+                    log_debug(f"Gemini Usage Metadata: {json.dumps(usage, indent=2)}")
 
             if not res_json.get('candidates') or not res_json['candidates'][0].get('content'):
                 if debug: print(f"DEBUG (call_llm/gemini): No candidates or content in response: {json.dumps(res_json)}")

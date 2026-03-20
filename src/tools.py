@@ -58,9 +58,12 @@ def tool_web_search(config, query):
     search_config = config.get("tools", {}).get("web", {}).get("search", {})
     if not search_config.get("enabled"):
         return "Error: Web search is disabled in config."
-    api_key = search_config.get("apiKey")
+    
+    secrets = config.get("secrets", {})
+    api_key = secrets.get("BRAVE_API_KEY")
+    
     if not api_key:
-        return "Error: Brave API key not found in config."
+        return "Error: Brave API key not found in secrets."
     
     headers = {"Accept": "application/json", "X-Subscription-Token": api_key}
     params = {"q": query}
@@ -149,9 +152,10 @@ def tool_execute_skill(agent, skill_name, parameters):
     clean_skill_name = skill_name.replace(".md", "").replace(".markdown", "")
     
     tinybot_root = os.environ.get("TINYBOT_ROOT", ".")
+    tinybot_src = os.environ.get("TINYBOT_SRC", ".")
     
-    # Try global skills first, then agent-specific skills
-    skill_file_path = os.path.join(tinybot_root, "skills", f"{clean_skill_name}.md")
+    # Try global skills first (in TINYBOT_SRC), then agent-specific skills (in TINYBOT_ROOT)
+    skill_file_path = os.path.join(tinybot_src, "skills", f"{clean_skill_name}.md")
     
     # Check agent-specific skills if not found in global
     if not os.path.exists(skill_file_path) and hasattr(agent, "key"):
@@ -160,7 +164,7 @@ def tool_execute_skill(agent, skill_name, parameters):
             skill_file_path = agent_skill_path
 
     if not os.path.exists(skill_file_path):
-        return f"Error: Skill '{clean_skill_name}' is not defined as a skill in the /skills directory."
+        return f"Error: Skill '{clean_skill_name}' is not defined as a skill in the /skills directory or agent-specific skills directory."
 
     with open(skill_file_path, "r") as f:
         content = f.read()
@@ -501,7 +505,8 @@ ALL_TOOL_FUNCTIONS = {
     "exec": tool_exec,
     "read": tool_read,
     "write": tool_write,
-    "execute_skill": tool_execute_skill
+    "execute_skill": tool_execute_skill,
+    "web_search": tool_web_search,
 }
 
 
@@ -517,6 +522,10 @@ def get_dispatcher(agent, tool_names=None):
     for name in tools_to_load:
         if name == "execute_skill":
             dispatcher[name] = lambda skill_name, parameters, n=name: ALL_TOOL_FUNCTIONS[n](agent, skill_name, parameters)
+        elif name == "spawn_subagent":
+            dispatcher[name] = lambda task_description, initial_prompt, required_tools, n=name: ALL_TOOL_FUNCTIONS[n](agent, task_description, initial_prompt, required_tools)
+        elif name == "web_search":
+            dispatcher[name] = lambda query, n=name: ALL_TOOL_FUNCTIONS[n](agent.config, query)
         elif name in ALL_TOOL_FUNCTIONS:
             dispatcher[name] = ALL_TOOL_FUNCTIONS[name]
     return dispatcher

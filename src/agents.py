@@ -51,12 +51,23 @@ class BaseAgent:
         return ""
 
     def _prepare_system_message(self):
-        skills_list = f"\n### Available Skills (Trigger via execute_skill ONLY):\n{self.available_skills}" if self.available_skills else ""
+        skills_text = ""
+        if self.available_skills:
+            skills_text = f"""### AVAILABLE SKILLS ###
+To use a skill, you MUST call the `execute_skill` tool. Do not just print the function call as text.
+The `execute_skill` tool has two parameters: `skill_name` (the name of the skill) and `parameters` (a dictionary of arguments).
+
+EXAMPLE: To run the 'summarize_file' skill on '/path/to/file.txt', your tool call would be:
+`execute_skill(skill_name="summarize_file", parameters={{"path": "/path/to/file.txt"}})`
+
+Here are the skills available to you:
+{self.available_skills}
+"""
         
         # Inject the dynamic memory path into the identity prompt if the placeholder exists
         identity_prompt = self.agent_system_prompt.replace("{{memory_path}}", self.memory_path)
         
-        full_prompt = f"You are {self.agent_name}. {identity_prompt}\n{skills_list}\n"
+        full_prompt = f"You are {self.agent_name}. {identity_prompt}\n{skills_text}\n"
         return {"role": "system", "content": full_prompt}
 
     def _call_llm_and_process_tools(self, messages_for_llm, max_iterations=10):
@@ -151,6 +162,30 @@ class GenericAgent(BaseAgent):
             model_key = config.get("chat_model")
             
         self.model_config = config.get("models", {}).get(model_key)
+        
+        # API keys are sourced *only* from the secrets dictionary in the config.
+        if self.model_config:
+            self.model_config.pop("api_key", None)
+            
+            api_type = self.model_config.get("type")
+            secrets = self.config.get("secrets", {})
+            api_key = None
+            key_name = None
+
+            if api_type == "openai_compatible":
+                key_name = secrets.get("OPENAI_API_KEY_NAME", "OPENAI_API_KEY")
+                api_key = secrets.get(key_name)
+            elif api_type == "google_gemini":
+                key_name = secrets.get("GOOGLE_GEMINI_API_KEY_NAME", "GOOGLE_GEMINI_API_KEY")
+                api_key = secrets.get(key_name) or secrets.get("GEMINI_API_KEY")
+            
+            if api_key:
+                self.model_config["api_key"] = api_key
+            elif key_name:
+                print(f"Warning: API key '{key_name}' not found in secrets for model type '{api_type}'. API calls may fail.")
+            else:
+                print(f"Warning: Could not determine API key name for model type '{api_type}'. API calls may fail.")
+
         self.supports_tools = True
         self.transitions = agent_def.get("transitions", {})
         self.history.append(self._prepare_system_message())
@@ -210,6 +245,30 @@ class SubAgent(BaseAgent):
             # Sub-agents typically use a versatile model, let's default to the chat model
             chat_model_key = config.get("chat_model")
             self.model_config = config.get("models", {}).get(chat_model_key)
+        
+        # API keys are sourced *only* from the secrets dictionary in the config.
+        if self.model_config:
+            self.model_config.pop("api_key", None)
+            
+            api_type = self.model_config.get("type")
+            secrets = self.config.get("secrets", {})
+            api_key = None
+            key_name = None
+
+            if api_type == "openai_compatible":
+                key_name = secrets.get("OPENAI_API_KEY_NAME", "OPENAI_API_KEY")
+                api_key = secrets.get(key_name)
+            elif api_type == "google_gemini":
+                key_name = secrets.get("GOOGLE_GEMINI_API_KEY_NAME", "GOOGLE_GEMINI_API_KEY")
+                api_key = secrets.get(key_name) or secrets.get("GEMINI_API_KEY")
+            
+            if api_key:
+                self.model_config["api_key"] = api_key
+            elif key_name:
+                print(f"Warning: API key '{key_name}' not found in secrets for model type '{api_type}'. API calls may fail.")
+            else:
+                print(f"Warning: Could not determine API key name for model type '{api_type}'. API calls may fail.")
+
         self.supports_tools = True
         
         self.task_description = task_description

@@ -2,30 +2,46 @@ import json
 import os
 import re
 from datetime import datetime
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 
 def load_secrets():
-    """Loads secrets from the .env file."""
+    log_debug("Loading secrets.")
+    """
+    Loads secrets from the .env file and returns them as a dictionary.
+    It does NOT modify the environment.
+    """
     tinybot_root = os.environ.get("TINYBOT_ROOT", os.path.expanduser("~/.tinybot"))
     secrets_path = os.path.join(tinybot_root, "secrets/api_keys.env")
+    
+    secrets = {}
     if os.path.exists(secrets_path):
-        load_dotenv(secrets_path)
+        log_debug("Found secret path.")
+        secrets.update(dotenv_values(secrets_path))
     else:
         # Fallback to local secrets if not in home dir
         local_secrets = os.path.join(os.getcwd(), "secrets/api_keys.env")
         if os.path.exists(local_secrets):
-            load_dotenv(local_secrets)
+            secrets.update(dotenv_values(local_secrets))
+            
+    return secrets
 
 def load_config():
-    """Loads the main configuration file."""
-    load_secrets() # Ensure secrets are loaded into environment
+    log_debug("Loading config.")
+    """Loads the main configuration file and merges secrets into it."""
+    config = {}
+    secrets = load_secrets()
+
     try:
         tinybot_root = os.environ.get("TINYBOT_ROOT", ".")
         config_path = os.path.join(tinybot_root, "config.json")
         with open(config_path, "r") as f:
-            return json.load(f)
+            config = json.load(f)
     except FileNotFoundError:
-        print("Error: config.json not found!"); exit(1)
+        print("Warning: config.json not found. Using default settings.")
+
+    # Merge secrets into the main config object under a dedicated key
+    config["secrets"] = secrets
+    return config
 
 def setup_logger(config, is_web_interface=False):
     """Sets up the transcript log file."""
@@ -138,12 +154,16 @@ def discover_skills(agent_key=None):
     """Scans global and agent-specific skills directories and returns an XML summary."""
     tinybot_root = os.environ.get("TINYBOT_ROOT", ".")
     
+    # Robustly determine the source root for global skills
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    tinybot_src = os.environ.get("TINYBOT_SRC", project_root)
+    
     skill_dirs = []
     if agent_key:
         agent_skills_dir = os.path.join(tinybot_root, "agents", agent_key, "skills")
         if os.path.exists(agent_skills_dir):
             skill_dirs.append(agent_skills_dir)
-    skill_dirs.append(os.path.join(tinybot_root, "skills"))
+    skill_dirs.append(os.path.join(tinybot_src, "skills"))
 
     skills_data = []
     seen_skills = set()
@@ -170,10 +190,16 @@ def discover_skills(agent_key=None):
                     if description and not description.endswith("."):
                         description += "."
 
+                    # Use abspath for comparison to handle relative paths like "."
+                    abs_skills_dir = os.path.abspath(skills_dir)
+                    abs_tinybot_src = os.path.abspath(tinybot_src)
+                    abs_tinybot_root = os.path.abspath(tinybot_root)
+
+                    base_path = tinybot_src if abs_skills_dir.startswith(abs_tinybot_src) else tinybot_root
                     skills_data.append({
                         "name": skill_name,
                         "description": description,
-                        "path": os.path.relpath(entry.path, tinybot_root)
+                        "path": os.path.relpath(entry.path, base_path)
                     })
                     seen_skills.add(skill_name)
                 except Exception as e:

@@ -12,7 +12,7 @@ Perform a web search using the Brave Search API via curl and return the raw JSON
 ## Steps
 
 1. **Tool: exec**
-    - `command`: `grep -A 2 '"search":' config.json | grep '"apiKey":' | cut -d'"' -f4`
+    - `command`: `echo $BRAVE_API_KEY`
     - `simple`: `true`
     - **Output:** `brave_api_key`
 
