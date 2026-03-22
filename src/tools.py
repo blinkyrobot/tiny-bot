@@ -1,3 +1,11 @@
+from dotenv import load_dotenv
+import os
+
+secrets_path = os.path.join(os.environ.get("TINYBOT_ROOT", "."), "secrets", "api_keys.env")
+load_dotenv(dotenv_path=secrets_path)
+
+def get_secret(key, config, default=None):
+    return os.environ.get(key) or config.get("secrets", {}).get(key) or default
 import subprocess
 import requests
 import os
@@ -60,7 +68,7 @@ def tool_web_search(config, query):
         return "Error: Web search is disabled in config."
     
     secrets = config.get("secrets", {})
-    api_key = secrets.get("BRAVE_API_KEY")
+    api_key = get_secret("BRAVE_API_KEY", config)
     
     if not api_key:
         return "Error: Brave API key not found in secrets."
@@ -495,6 +503,20 @@ ALL_TOOL_DEFINITIONS = {
                     "parameters": {"type": "object", "description": "Skill parameters."}
                 },
                 "required": ["skill_name", "parameters"]
+            }
+        }
+    },
+    "web_search": {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Search the web for a query.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query."}
+                },
+                "required": ["query"]
             }
         }
     }

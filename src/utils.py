@@ -117,7 +117,7 @@ def load_agent_definition(path):
         }
         
         # Parse Config section
-        config_match = re.search(r"## Config\n(.*?)\n##", content, re.DOTALL)
+        config_match = re.search(r"## Config\n(.*?)(?:\n##|\Z)", content, re.DOTALL)
         if config_match:
             config_text = config_match.group(1)
             name_match = re.search(r"-\s*\*\*Name:\*\*\s*(.*)", config_text)
@@ -131,16 +131,24 @@ def load_agent_definition(path):
             if model_match: agent_def["default_model"] = model_match.group(1).strip()
             if tools_match:
                 tools_str = tools_match.group(1).strip()
-                agent_def["tools"] = [t.strip() for t in tools_str.split(",")]
+                agent_def["tools"] = [t.strip() for t in tools_str.split(",") if t.strip()]
             
             if transitions_match:
                 transitions_str = transitions_match.group(1).strip()
-                # format: target: [word1, word2], target2: [word3]
-                # More robust split using regex to find target: [keywords]
                 rules = re.findall(r"(\w+):\s*\[(.*?)\]", transitions_str)
                 for target, keywords_str in rules:
                     keywords = [k.strip() for k in keywords_str.split(",")]
                     agent_def["transitions"][target.strip()] = keywords
+
+        # Fallback: Parse dedicated ## Tools section if no tools found in Config
+        if not agent_def["tools"]:
+            tools_section_match = re.search(r"## Tools\n(.*?)(?:\n##|\Z)", content, re.DOTALL)
+            if tools_section_match:
+                tools_text = tools_section_match.group(1)
+                # Look for bullet points like "- exec" or "- exec: description"
+                tool_lines = re.findall(r"-\s*(\w+)", tools_text)
+                if tool_lines:
+                    agent_def["tools"] = tool_lines
         
         # Use the entire file content for the identity/prompt
         agent_def["identity"] = content.strip()

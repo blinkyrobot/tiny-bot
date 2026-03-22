@@ -54,11 +54,9 @@ class BaseAgent:
         skills_text = ""
         if self.available_skills:
             skills_text = f"""### AVAILABLE SKILLS ###
-To use a skill, you MUST call the `execute_skill` tool. Do not just print the function call as text.
-The `execute_skill` tool has two parameters: `skill_name` (the name of the skill) and `parameters` (a dictionary of arguments).
-
-EXAMPLE: To run the 'summarize_file' skill on '/path/to/file.txt', your tool call would be:
-`execute_skill(skill_name="summarize_file", parameters={{"path": "/path/to/file.txt"}})`
+You have access to a set of skills defined in markdown files.
+To use a skill, you MUST use the `execute_skill` tool with the appropriate `skill_name` and `parameters`.
+IMPORTANT: Do NOT output the tool call as text in your response. Instead, trigger the `execute_skill` function using your tool-calling capability.
 
 Here are the skills available to you:
 {self.available_skills}
@@ -149,7 +147,9 @@ Here are the skills available to you:
 
 class GenericAgent(BaseAgent):
     def __init__(self, config, agent_def, global_llm_caller_func, log_file, available_skills=""):
-        required_tools = agent_def.get("tools", ["exec", "read", "write", "execute_skill"])
+        required_tools = agent_def.get("tools")
+        if not required_tools:
+            required_tools = ["exec", "read", "write", "execute_skill"]
         super().__init__(config, agent_def, global_llm_caller_func, log_file, available_skills=available_skills, required_tools=required_tools)
         
         self.default_model_key = agent_def.get("default_model")
@@ -161,6 +161,7 @@ class GenericAgent(BaseAgent):
         elif not model_key:
             model_key = config.get("chat_model")
             
+        self.active_model_key = model_key
         self.model_config = config.get("models", {}).get(model_key)
         
         # API keys are sourced *only* from the secrets dictionary in the config.
@@ -189,6 +190,28 @@ class GenericAgent(BaseAgent):
         self.supports_tools = True
         self.transitions = agent_def.get("transitions", {})
         self.history.append(self._prepare_system_message())
+
+    def set_model(self, model_key):
+        """Switches the active model for this agent."""
+        if model_key in self.config.get("models", {}):
+            new_model_config = self.config["models"][model_key].copy()
+            # Handle secrets as in __init__
+            api_type = new_model_config.get("type")
+            secrets = self.config.get("secrets", {})
+            api_key = None
+            
+            if api_type == "openai_compatible":
+                api_key = secrets.get(secrets.get("OPENAI_API_KEY_NAME", "OPENAI_API_KEY"))
+            elif api_type == "google_gemini":
+                api_key = secrets.get(secrets.get("GOOGLE_GEMINI_API_KEY_NAME", "GOOGLE_GEMINI_API_KEY")) or secrets.get("GEMINI_API_KEY")
+            
+            if api_key:
+                new_model_config["api_key"] = api_key
+            
+            self.active_model_key = model_key
+            self.model_config = new_model_config
+            return True
+        return False
 
     def handle_prompt(self, user_input, session_state):
         messages_for_llm = list(self.history)
