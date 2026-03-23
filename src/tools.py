@@ -1,19 +1,81 @@
 from dotenv import load_dotenv
 import os
+from pathlib import Path
+import subprocess
+import requests
+import pypdf
+import json
+import re
+import difflib
+from datetime import datetime
+from llm import call_llm
 
 secrets_path = os.path.join(os.environ.get("TINYBOT_ROOT", "."), "secrets", "api_keys.env")
 load_dotenv(dotenv_path=secrets_path)
 
 def get_secret(key, config, default=None):
     return os.environ.get(key) or config.get("secrets", {}).get(key) or default
-import subprocess
-import requests
-import os
-import pypdf
-import json # Added for parsing skill definitions
-import re
-from llm import call_llm # Added for direct LLM calls in tool_execute_skill
-from datetime import datetime # Added for timestamp in summaries
+
+def parse_search_replace_blocks(text: str) -> list[dict]:
+    """
+    Extract file path + search/replace blocks from LLM output.
+    Returns list of {'path': str, 'search': str, 'replace': str}
+    """
+    blocks = []
+    pattern = r'(?m)^\s*(?P<path>.*)\n\s*<<<<<<< SEARCH\s*\n(?P<search>.*?)\n\s*=======\s*\n(?P<replace>.*?)\n\s*>>>>>>> REPLACE'
+
+    for match in re.finditer(pattern, text, re.DOTALL):
+        path_raw = match.group('path').strip()
+        path = re.sub(r'^(File|Path|Target):\s*', '', path_raw, flags=re.IGNORECASE)
+        path = path.strip('`').strip('*').strip(':').strip()
+        
+        search = match.group('search')
+        replace = match.group('replace')
+        blocks.append({'path': path, 'search': search, 'replace': replace})
+
+    return blocks
+
+def apply_edit_block(path: Path, search: str, replace: str, fuzzy: bool = True) -> bool:
+    """Apply one block; return True if success."""
+    if not path.exists():
+        print(f"File not found: {path}")
+        return False
+
+    original_content = path.read_text(encoding='utf-8')
+
+    # Try exact match first
+    if search in original_content:
+        new_content = original_content.replace(search, replace, 1)  # only first occurrence
+        path.write_text(new_content, encoding='utf-8')
+        print(f"Applied exact edit to {path}")
+        return True
+
+    if not fuzzy:
+        print(f"Exact SEARCH not found in {path}")
+        return False
+
+    # Fuzzy fallback (very helpful for whitespace/indent drift)
+    lines = original_content.splitlines(keepends=True)
+    search_lines = search.splitlines(keepends=True)
+    best_ratio = 0
+    best_start = -1
+
+    for i in range(len(lines) - len(search_lines) + 1):
+        chunk = ''.join(lines[i:i + len(search_lines)])
+        ratio = difflib.SequenceMatcher(None, chunk, search).ratio()
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_start = i
+
+    if best_ratio > 0.85:  # tune threshold (0.9+ stricter, 0.8 more forgiving)
+        # Replace the lines
+        new_lines = lines[:best_start] + replace.splitlines(keepends=True) + lines[best_start + len(search_lines):]
+        path.write_text(''.join(new_lines), encoding='utf-8')
+        print(f"Fuzzy applied to {path} (similarity {best_ratio:.2f})")
+        return True
+
+    print(f"No good match found in {path} (best {best_ratio:.2f})")
+    return False
 
 def tool_exec(command, simple=False):
     try:
@@ -29,7 +91,6 @@ STDERR:
     except Exception as e: return f"Error executing command: {e}"
 
 def tool_read(path, tail=None):
-# ... (existing tool_read)
     try:
         expanded_path = os.path.expanduser(path)
         print(f"DEBUG: Attempting to read file at path: {expanded_path} (tail: {tail})")
@@ -486,11 +547,46 @@ def tool_execute_skill(agent, skill_name, parameters):
         return f"Error executing skill '{skill_name}': {e}"
 
 
+def tool_apply_edit_block(path, search, replace, fuzzy=True):
+    try:
+        tinybot_root = os.path.abspath(os.environ.get("TINYBOT_ROOT", "."))
+        full_path = os.path.abspath(os.path.join(tinybot_root, path))
+        
+        # Security check: ensure the resolved path is within tinybot_root
+        if not full_path.startswith(tinybot_root):
+            return f"Error: Write access is restricted to the project directory ({tinybot_root}). Attempted to write to {full_path}."
+
+        result = apply_edit_block(Path(full_path), search, replace, fuzzy=fuzzy)
+        if result:
+            return f"Successfully applied edit block to {path}."
+        else:
+            return f"Error: SEARCH block not found in {path}. Please ensure exact matching if fuzzy=False."
+    except Exception as e:
+        return f"Error applying edit block to {path}: {e}"
+
+
 # New: Centralized tool definitions
 ALL_TOOL_DEFINITIONS = {
     "exec": {"type": "function", "function": {"name": "exec", "description": "Run shell command.", "parameters": {"type": "object", "properties": {"command": {"type": "string"}, "simple": {"type": "boolean", "description": "If true, only return the stripped stdout. Use for variables in skills."}}, "required": ["command"]}}},
     "read": {"type": "function", "function": {"name": "read", "description": "Read file.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "tail": {"type": "integer", "description": "Optional: Number of lines to read from the end of the file."}}, "required": ["path"]}}},
     "write": {"type": "function", "function": {"name": "write", "description": "Write to file.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}, "append": {"type": "boolean", "description": "Append if true, else overwrite."}}, "required": ["path", "content"]}}},
+    "apply_edit_block": {
+        "type": "function",
+        "function": {
+            "name": "apply_edit_block",
+            "description": "Apply a surgical search-and-replace block to a file. Useful for small changes without overwriting the entire file.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File path relative to repository root."},
+                    "search": {"type": "string", "description": "The exact block of code to search for."},
+                    "replace": {"type": "string", "description": "The block of code to replace it with."},
+                    "fuzzy": {"type": "boolean", "description": "If True, use fuzzy matching for SEARCH block.", "default": True}
+                },
+                "required": ["path", "search", "replace"]
+            }
+        }
+    },
     "execute_skill": {
         "type": "function",
         "function": {
@@ -527,6 +623,7 @@ ALL_TOOL_FUNCTIONS = {
     "exec": tool_exec,
     "read": tool_read,
     "write": tool_write,
+    "apply_edit_block": tool_apply_edit_block,
     "execute_skill": tool_execute_skill,
     "web_search": tool_web_search,
 }

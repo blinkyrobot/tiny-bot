@@ -149,7 +149,7 @@ class GenericAgent(BaseAgent):
     def __init__(self, config, agent_def, global_llm_caller_func, log_file, available_skills=""):
         required_tools = agent_def.get("tools")
         if not required_tools:
-            required_tools = ["exec", "read", "write", "execute_skill"]
+            required_tools = ["exec", "read", "write", "apply_edit_block", "execute_skill"]
         super().__init__(config, agent_def, global_llm_caller_func, log_file, available_skills=available_skills, required_tools=required_tools)
         
         self.default_model_key = agent_def.get("default_model")

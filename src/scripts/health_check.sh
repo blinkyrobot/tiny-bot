@@ -2,7 +2,7 @@
 # Health Check Script
 # This script monitors system health and logs results to a file.
 
-LOG_FILE="/Users/peggy/.tinybot/agents/chat/server_health.log"
+LOG_FILE="/Users/peggy/.tinybot/agents/main/server_health.log"
 TIMESTAMP=$(date "+%Y-%m-%d %H:%M:%S")
 
 # Resource Metrics
