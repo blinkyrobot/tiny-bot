@@ -93,8 +93,23 @@ class TinyBotCore:
         if new_prompt:
             new_agent.handle_prompt(new_prompt, state)
 
+    def check_agent_inboxes(self):
+        """Check all registered agents for messages in their inbox."""
+        state = self.session_manager.get_state()
+        tinybot_root = os.environ.get("TINYBOT_ROOT", "/Users/peggy/.tinybot")
+        
+        for agent_key, agent in state.get("agents", {}).items():
+            inbox_path = os.path.join(tinybot_root, "agents", agent_key.lower().replace("agent", ""), "inbox")
+            if os.path.exists(inbox_path) and os.listdir(inbox_path):
+                log_debug(f"Mail found for agent {agent_key}. Spawning handler...")
+                # Logic to trigger agent to process inbox
+                # This could be calling a method on the agent or spawning a subprocess
+                # For now, we simulate with a log and a dummy action
+                agent.handle_prompt(f"SYSTEM: You have new messages in your inbox at {inbox_path}. Please process them.", state)
+
     def process(self, user_input):
-        """Main entry point for processing messages (used by engine_server)."""
+        """Main entry point for processing messages."""
+        self.check_agent_inboxes() # Check inboxes before every turn
         return self.process_user_input(user_input)
 
     def process_user_input(self, user_input):
@@ -237,9 +252,8 @@ class TinyBotCore:
             if models:
                 model_lines = ["Available Models: *beep*"]
                 for model_key, model_config in models.items():
-                    model_type = model_config.get("type", "unknown")
                     suffix = " [ACTIVE]" if model_key == active_model_key else ""
-                    model_lines.append(f"- {model_key}{suffix} ({model_type})")
+                    model_lines.append(f"- {model_key}{suffix}")
                 response_messages.append("\n".join(model_lines))
             else:
                 response_messages.append("No models configured.")

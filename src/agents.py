@@ -4,20 +4,31 @@ import os
 from datetime import datetime
 from utils import log_message
 from llm import call_llm
-from tools import get_tools_definition, get_dispatcher # Ensure these are imported
+from tools import get_tools_definition, get_dispatcher  # Ensure these are imported
+
 
 class BaseAgent:
-    def __init__(self, config, agent_def, global_llm_caller_func, log_file, available_skills="", required_tools=None):
+    def __init__(
+        self,
+        config,
+        agent_def,
+        global_llm_caller_func,
+        log_file,
+        available_skills="",
+        required_tools=None,
+    ):
         self.config = config
         self.agent_name = agent_def.get("name", agent_def["key"])
-        self.key = agent_def["key"] # Ensure agent has a key attribute
+        self.key = agent_def["key"]  # Ensure agent has a key attribute
         self.global_llm_caller = global_llm_caller_func
         self.log_file = log_file
         self.debug_mode = config.get("debug", False)
         self.available_skills = available_skills
 
         # Agent's directory and memory path
-        self.agent_dir = os.path.join(os.environ.get("TINYBOT_ROOT", "."), "agents", agent_def["key"])
+        self.agent_dir = os.path.join(
+            os.environ.get("TINYBOT_ROOT", "."), "agents", agent_def["key"]
+        )
         self.memory_path = os.path.join(self.agent_dir, "memory.md")
         self.agent_memory = self._load_agent_memory()
 
@@ -30,6 +41,20 @@ class BaseAgent:
 
         # Initialize tools based on required_tools
         self.tools_definition = get_tools_definition(required_tools)
+
+        # ADDED: Load local agent skills if they exist
+        local_skills_dir = os.path.join(self.agent_dir, "skills")
+        if os.path.exists(local_skills_dir):
+            import glob
+
+            local_skills = glob.glob(os.path.join(local_skills_dir, "*.md"))
+            # Optionally merge/extend the available_skills string
+            # This assumes available_skills is a formatted string.
+            # In a real fix, we might need a more robust registration system.
+            for skill_path in local_skills:
+                skill_name = os.path.basename(skill_path).replace(".md", "")
+                self.available_skills += f"\n- {skill_name}: (Local Agent Skill)"
+
         self.dispatcher = get_dispatcher(self, required_tools)
 
         self.history = []
@@ -43,12 +68,26 @@ class BaseAgent:
         if os.path.exists(self.memory_path):
             with open(self.memory_path, "r") as f:
                 from collections import deque
+
                 lines = deque(f, maxlen=100)
                 content = "".join(lines)
                 if len(content) > 10000:
                     content = "... [truncated] ...\n" + content[-10000:]
                 return content
         return ""
+
+    def _get_token_count(self, messages_for_llm):
+        """Calculates token count based on character count approximation (4 chars per token)."""
+        total_chars = sum(len(str(m.get("content", ""))) for m in messages_for_llm)
+        return total_chars // 4
+
+    def _check_memory_usage(self, messages_for_llm):
+        """Monitors prompt size and triggers summary/pruning if threshold is reached."""
+        if self._get_token_count(messages_for_llm) > 15000:
+            if self.debug_mode:
+                print("DEBUG: Memory threshold reached, triggering cleanup.")
+            # Implementation for summary/pruning to follow
+            pass
 
     def _prepare_system_message(self):
         skills_text = ""
@@ -61,27 +100,44 @@ IMPORTANT: Do NOT output the tool call as text in your response. Instead, trigge
 Here are the skills available to you:
 {self.available_skills}
 """
-        
+
         # Inject the dynamic memory path into the identity prompt if the placeholder exists
-        identity_prompt = self.agent_system_prompt.replace("{{memory_path}}", self.memory_path)
-        
+        identity_prompt = self.agent_system_prompt.replace(
+            "{{memory_path}}", self.memory_path
+        )
+
         full_prompt = f"You are {self.agent_name}. {identity_prompt}\n{skills_text}\n"
         return {"role": "system", "content": full_prompt}
 
     def _call_llm_and_process_tools(self, messages_for_llm, max_iterations=10):
-        if self.debug_mode: print(f"DEBUG: Entering _call_llm_and_process_tools loop (Max iterations: {max_iterations}).")
+        if self.debug_mode:
+            print(
+                f"DEBUG: Entering _call_llm_and_process_tools loop (Max iterations: {max_iterations})."
+            )
         iterations = 0
         while iterations < max_iterations:
             iterations += 1
             if not self.model_config:
-                if self.debug_mode: print("DEBUG: Agent's model configuration is not set. Exiting loop.")
+                if self.debug_mode:
+                    print(
+                        "DEBUG: Agent's model configuration is not set. Exiting loop."
+                    )
                 return "Error: Agent's model configuration is not set."
 
             if self.debug_mode:
-                print(f"DEBUG: Iteration {iterations}/{max_iterations}. Messages sent to LLM ({len(messages_for_llm)} messages):")
+                print(
+                    f"DEBUG: Iteration {iterations}/{max_iterations}. Messages sent to LLM ({len(messages_for_llm)} messages):"
+                )
 
-            response_message = self.global_llm_caller(self.model_config, messages_for_llm, self.tools_definition, self.supports_tools, debug=self.debug_mode, log_file=self.log_file)
-            
+            response_message = self.global_llm_caller(
+                self.model_config,
+                messages_for_llm,
+                self.tools_definition,
+                self.supports_tools,
+                debug=self.debug_mode,
+                log_file=self.log_file,
+            )
+
             # Preserve the raw response in history and logs to maintain API contracts (e.g. thought_signature)
             self.history.append(response_message)
             messages_for_llm.append(response_message)
@@ -91,83 +147,126 @@ Here are the skills available to you:
             clean_content = response_message.get("content", "")
             if self.config.get("show_thinking") is False:
                 if clean_content:
-                    clean_content = re.sub(r"<think>.*?(?:</think>|$)", "", clean_content, flags=re.DOTALL).strip()
+                    clean_content = re.sub(
+                        r"<think>.*?(?:</think>|$)", "", clean_content, flags=re.DOTALL
+                    ).strip()
 
             if not response_message.get("tool_calls"):
-                if self.debug_mode: print("DEBUG: LLM returned conversational response. Exiting loop.")
+                if self.debug_mode:
+                    print("DEBUG: LLM returned conversational response. Exiting loop.")
                 llm_content = clean_content if clean_content else "No response content."
                 self.last_response = llm_content
                 return llm_content
-            
+
             # Process ALL tool calls in the response
             tool_calls = response_message.get("tool_calls", [])
             for call in tool_calls:
-                function_call = call.get('function', {})
+                function_call = call.get("function", {})
                 raw_tool_name = function_call.get("name")
                 # Handle namespacing (e.g. 'default_api:exec') for local dispatcher lookup
-                tool_name = raw_tool_name.split(":")[-1] if ":" in raw_tool_name else raw_tool_name
+                tool_name = (
+                    raw_tool_name.split(":")[-1]
+                    if ":" in raw_tool_name
+                    else raw_tool_name
+                )
                 args_str = function_call.get("arguments", "{}")
-                
+
                 print(f"Calling tool: {raw_tool_name}({args_str})...")
 
                 try:
                     args = json.loads(args_str)
                     if tool_name in self.dispatcher:
                         output = self.dispatcher[tool_name](**args)
-                        
+
                         if isinstance(output, str) and len(output) > 5000:
                             output = output[:5000] + "\n... [truncated]"
 
-                        tool_msg = {"role": "tool", "tool_call_id": call.get('id'), "name": raw_tool_name, "content": output}
+                        tool_msg = {
+                            "role": "tool",
+                            "tool_call_id": call.get("id"),
+                            "name": raw_tool_name,
+                            "content": output,
+                        }
                         messages_for_llm.append(tool_msg)
-                        self.history.append(tool_msg) # Important: Keep history in sync
+                        self.history.append(tool_msg)  # Important: Keep history in sync
                         log_message(self.log_file, "tool", tool_msg, self.agent_name)
                     else:
                         error_content = f"Error: Unknown tool '{raw_tool_name}' (normalized to '{tool_name}')"
-                        tool_msg = {"role": "tool", "tool_call_id": call.get('id'), "name": raw_tool_name, "content": error_content}
+                        tool_msg = {
+                            "role": "tool",
+                            "tool_call_id": call.get("id"),
+                            "name": raw_tool_name,
+                            "content": error_content,
+                        }
                         messages_for_llm.append(tool_msg)
                         self.history.append(tool_msg)
                         log_message(self.log_file, "tool", tool_msg)
                 except Exception as e:
                     error_content = f"Error: Invalid arguments or execution failure for tool '{raw_tool_name}'. Exception: {e}"
-                    tool_msg = {"role": "tool", "tool_call_id": call.get('id'), "name": raw_tool_name, "content": error_content}
+                    tool_msg = {
+                        "role": "tool",
+                        "tool_call_id": call.get("id"),
+                        "name": raw_tool_name,
+                        "content": error_content,
+                    }
                     messages_for_llm.append(tool_msg)
                     self.history.append(tool_msg)
                     log_message(self.log_file, "tool", tool_msg, self.agent_name)
-            
-            if self.debug_mode: print(f"DEBUG: Finished processing {len(tool_calls)} tool calls. Continuing loop.")
+
+            if self.debug_mode:
+                print(
+                    f"DEBUG: Finished processing {len(tool_calls)} tool calls. Continuing loop."
+                )
 
         if iterations >= max_iterations:
-             error_msg = f"Error: Maximum tool-call iterations ({max_iterations}) reached. The agent might be in a loop. *boop*"
-             print(error_msg)
-             return error_msg
+            error_msg = f"Error: Maximum tool-call iterations ({max_iterations}) reached. The agent might be in a loop. *boop*"
+            print(error_msg)
+            return error_msg
 
     def handle_prompt(self, user_input, session_state):
-        raise NotImplementedError("handle_prompt method must be implemented by derived classes.")
+        raise NotImplementedError(
+            "handle_prompt method must be implemented by derived classes."
+        )
+
 
 class GenericAgent(BaseAgent):
-    def __init__(self, config, agent_def, global_llm_caller_func, log_file, available_skills=""):
+    def __init__(
+        self, config, agent_def, global_llm_caller_func, log_file, available_skills=""
+    ):
         required_tools = agent_def.get("tools")
         if not required_tools:
-            required_tools = ["exec", "read", "write", "apply_edit_block", "execute_skill"]
-        super().__init__(config, agent_def, global_llm_caller_func, log_file, available_skills=available_skills, required_tools=required_tools)
-        
+            required_tools = [
+                "exec",
+                "read",
+                "write",
+                "apply_edit_block",
+                "execute_skill",
+            ]
+        super().__init__(
+            config,
+            agent_def,
+            global_llm_caller_func,
+            log_file,
+            available_skills=available_skills,
+            required_tools=required_tools,
+        )
+
         self.default_model_key = agent_def.get("default_model")
         model_key = self.default_model_key
-        
+
         # Resolve aliases like 'chat_model' or 'coding_model'
         if model_key in config:
             model_key = config[model_key]
         elif not model_key:
             model_key = config.get("chat_model")
-            
+
         self.active_model_key = model_key
         self.model_config = config.get("models", {}).get(model_key)
-        
+
         # API keys are sourced *only* from the secrets dictionary in the config.
         if self.model_config:
             self.model_config.pop("api_key", None)
-            
+
             api_type = self.model_config.get("type")
             secrets = self.config.get("secrets", {})
             api_key = None
@@ -177,15 +276,21 @@ class GenericAgent(BaseAgent):
                 key_name = secrets.get("OPENAI_API_KEY_NAME", "OPENAI_API_KEY")
                 api_key = secrets.get(key_name)
             elif api_type == "google_gemini":
-                key_name = secrets.get("GOOGLE_GEMINI_API_KEY_NAME", "GOOGLE_GEMINI_API_KEY")
+                key_name = secrets.get(
+                    "GOOGLE_GEMINI_API_KEY_NAME", "GOOGLE_GEMINI_API_KEY"
+                )
                 api_key = secrets.get(key_name) or secrets.get("GEMINI_API_KEY")
-            
+
             if api_key:
                 self.model_config["api_key"] = api_key
             elif key_name:
-                print(f"Warning: API key '{key_name}' not found in secrets for model type '{api_type}'. API calls may fail.")
+                print(
+                    f"Warning: API key '{key_name}' not found in secrets for model type '{api_type}'. API calls may fail."
+                )
             else:
-                print(f"Warning: Could not determine API key name for model type '{api_type}'. API calls may fail.")
+                print(
+                    f"Warning: Could not determine API key name for model type '{api_type}'. API calls may fail."
+                )
 
         self.supports_tools = True
         self.transitions = agent_def.get("transitions", {})
@@ -199,28 +304,40 @@ class GenericAgent(BaseAgent):
             api_type = new_model_config.get("type")
             secrets = self.config.get("secrets", {})
             api_key = None
-            
+
             if api_type == "openai_compatible":
-                api_key = secrets.get(secrets.get("OPENAI_API_KEY_NAME", "OPENAI_API_KEY"))
+                api_key = secrets.get(
+                    secrets.get("OPENAI_API_KEY_NAME", "OPENAI_API_KEY")
+                )
             elif api_type == "google_gemini":
-                api_key = secrets.get(secrets.get("GOOGLE_GEMINI_API_KEY_NAME", "GOOGLE_GEMINI_API_KEY")) or secrets.get("GEMINI_API_KEY")
-            
+                api_key = secrets.get(
+                    secrets.get("GOOGLE_GEMINI_API_KEY_NAME", "GOOGLE_GEMINI_API_KEY")
+                ) or secrets.get("GEMINI_API_KEY")
+
             if api_key:
                 new_model_config["api_key"] = api_key
-            
+
             self.active_model_key = model_key
             self.model_config = new_model_config
             return True
         return False
 
     def handle_prompt(self, user_input, session_state):
+        if "SYSTEM: You have new messages in your inbox" in user_input:
+            match = re.search(r"inbox at ([\w/.-]+)", user_input)
+            inbox_path = match.group(1) if match else None
+            return self.dispatcher["execute_skill"](
+                skill_name="inbox_handler", parameters={"inbox_path": inbox_path}
+            )
+
         messages_for_llm = list(self.history)
-        
+
         # Handle Document Q&A Mode (if context exists)
         if session_state.get("document_context"):
-            print("INFO: Document context is loaded. Answering in Q&A mode. (use /clear_context to exit)")
-            qa_system_prompt = (
-                f"""{self.agent_system_prompt}
+            print(
+                "INFO: Document context is loaded. Answering in Q&A mode. (use /clear_context to exit)"
+            )
+            qa_system_prompt = f"""{self.agent_system_prompt}
 
 ### DOCUMENT Q&A MODE ###
 You are currently in a question-answering mode focused on a specific document. 
@@ -229,13 +346,14 @@ Your answers MUST be based *only* on the text of this document.
 Do not use your general knowledge. If the answer is not in the document, say so explicitly.
 
 --- DOCUMENT START ---
-{session_state['document_context']}
+{session_state["document_context"]}
 --- DOCUMENT END ---"""
-            )
             if messages_for_llm and messages_for_llm[0]["role"] == "system":
                 messages_for_llm[0] = {"role": "system", "content": qa_system_prompt}
             else:
-                messages_for_llm.insert(0, {"role": "system", "content": qa_system_prompt})
+                messages_for_llm.insert(
+                    0, {"role": "system", "content": qa_system_prompt}
+                )
 
         # Append /no_think if show_thinking is False
         llm_user_input = user_input
@@ -244,35 +362,59 @@ Do not use your general knowledge. If the answer is not in the document, say so 
 
         messages_for_llm.append({"role": "user", "content": llm_user_input})
         self.history.append({"role": "user", "content": llm_user_input})
-        log_message(self.log_file, "user", user_input, self.agent_name) # Log original input
+        log_message(
+            self.log_file, "user", user_input, self.agent_name
+        )  # Log original input
 
         llm_response_content = self._call_llm_and_process_tools(messages_for_llm)
         self.last_response = llm_response_content
-        
+
         # Also check for specific command triggers
-        if "/done-coding" in user_input.lower() and "general_chat" in session_state["agents"]:
+        if (
+            "/done-coding" in user_input.lower()
+            and "general_chat" in session_state["agents"]
+        ):
             return "general_chat"
 
         return None
+
 
 class SubAgent(BaseAgent):
     """
     A specialized agent for handling delegated, self-contained tasks.
     """
-    def __init__(self, config, agent_def, global_llm_caller_func, log_file, task_description, available_skills="", required_tools=None, parent_model_config=None):
-        super().__init__(config, agent_def, global_llm_caller_func, log_file, available_skills=available_skills, required_tools=required_tools)
-        
+
+    def __init__(
+        self,
+        config,
+        agent_def,
+        global_llm_caller_func,
+        log_file,
+        task_description,
+        available_skills="",
+        required_tools=None,
+        parent_model_config=None,
+    ):
+        super().__init__(
+            config,
+            agent_def,
+            global_llm_caller_func,
+            log_file,
+            available_skills=available_skills,
+            required_tools=required_tools,
+        )
+
         if parent_model_config:
             self.model_config = parent_model_config
         else:
             # Sub-agents typically use a versatile model, let's default to the chat model
             chat_model_key = config.get("chat_model")
             self.model_config = config.get("models", {}).get(chat_model_key)
-        
+
         # API keys are sourced *only* from the secrets dictionary in the config.
         if self.model_config:
             self.model_config.pop("api_key", None)
-            
+
             api_type = self.model_config.get("type")
             secrets = self.config.get("secrets", {})
             api_key = None
@@ -282,25 +424,42 @@ class SubAgent(BaseAgent):
                 key_name = secrets.get("OPENAI_API_KEY_NAME", "OPENAI_API_KEY")
                 api_key = secrets.get(key_name)
             elif api_type == "google_gemini":
-                key_name = secrets.get("GOOGLE_GEMINI_API_KEY_NAME", "GOOGLE_GEMINI_API_KEY")
+                key_name = secrets.get(
+                    "GOOGLE_GEMINI_API_KEY_NAME", "GOOGLE_GEMINI_API_KEY"
+                )
                 api_key = secrets.get(key_name) or secrets.get("GEMINI_API_KEY")
-            
+
             if api_key:
                 self.model_config["api_key"] = api_key
             elif key_name:
-                print(f"Warning: API key '{key_name}' not found in secrets for model type '{api_type}'. API calls may fail.")
+                print(
+                    f"Warning: API key '{key_name}' not found in secrets for model type '{api_type}'. API calls may fail."
+                )
             else:
-                print(f"Warning: Could not determine API key name for model type '{api_type}'. API calls may fail.")
+                print(
+                    f"Warning: Could not determine API key name for model type '{api_type}'. API calls may fail."
+                )
 
         self.supports_tools = True
-        
+
         self.task_description = task_description
-        self.agent_system_prompt = agent_def["identity"] + f"\nYour assigned task is: {self.task_description}"
+        self.agent_system_prompt = (
+            agent_def["identity"] + f"\nYour assigned task is: {self.task_description}"
+        )
         self.agent_name = agent_def.get("name", agent_def["key"])
         self.history.append(self._prepare_system_message())
         self.result = None
 
     def handle_prompt(self, user_input, session_state):
+        """Standard prompt handler with Inbox capability."""
+        print(f"DEBUG: SubAgent.handle_prompt called with input: {user_input[:200]}...")
+        if "SYSTEM: You have new messages in your inbox" in user_input:
+            match = re.search(r"inbox at ([\w/.-]+)", user_input)
+            inbox_path = match.group(1) if match else None
+            return self.dispatcher["execute_skill"](
+                skill_name="inbox_handler", parameters={"inbox_path": inbox_path}
+            )
+
         """
         For a sub-agent, the 'user_input' is the initial instruction to kick off its task.
         """
@@ -309,13 +468,16 @@ class SubAgent(BaseAgent):
             llm_user_input += " /no_think"
 
         self.history.append({"role": "user", "content": llm_user_input})
-        log_message(self.log_file, "user", f"SubAgent Task Start: {user_input}", self.agent_name)
+        log_message(
+            self.log_file, "user", f"SubAgent Task Start: {user_input}", self.agent_name
+        )
 
         llm_response_content = self._call_llm_and_process_tools(list(self.history))
         self.result = llm_response_content
 
-        print(f"SubAgent ({self.agent_name}): Task execution finished. Result: {self.result}")
-        
+        print(
+            f"SubAgent ({self.agent_name}): Task execution finished. Result: {self.result}"
+        )
+
         # Sub-agents are single-shot, they don't transition, they return their result.
         return self.result
-
