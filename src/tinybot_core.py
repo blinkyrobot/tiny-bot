@@ -1,6 +1,7 @@
 import json
 import importlib
 import os
+import glob
 
 from utils import (
     load_config,
@@ -9,6 +10,10 @@ from utils import (
     log_debug,
     discover_agents,
     discover_skills,
+    parse_sir,
+    send_sir_message,
+    archive_sir_message,
+    get_agent_key_by_name,
 )
 from llm import call_llm
 from session_manager import SessionManager
@@ -94,23 +99,84 @@ class TinyBotCore:
             new_agent.handle_prompt(new_prompt, state)
 
     def check_agent_inboxes(self):
-        """Check all registered agents for messages in their inbox."""
+        """
+        Check all registered agents for messages. 
+        Background agents auto-reply; the Active agent receives messages in-context.
+        """
         state = self.session_manager.get_state()
-        tinybot_root = os.environ.get("TINYBOT_ROOT", "/Users/peggy/.tinybot")
+        active_key = state.get("active_agent_key")
+        tinybot_root = os.environ.get("TINYBOT_ROOT", os.path.expanduser("~/.tinybot"))
         
+        notifications = []
+        active_agent_messages = []
+        
+        # 1. Snapshot: Find all messages that exist right now
+        pending_work = []
         for agent_key, agent in state.get("agents", {}).items():
-            inbox_path = os.path.join(tinybot_root, "agents", agent_key.lower().replace("agent", ""), "inbox")
-            if os.path.exists(inbox_path) and os.listdir(inbox_path):
-                log_debug(f"Mail found for agent {agent_key}. Spawning handler...")
-                # Logic to trigger agent to process inbox
-                # This could be calling a method on the agent or spawning a subprocess
-                # For now, we simulate with a log and a dummy action
-                agent.handle_prompt(f"SYSTEM: You have new messages in your inbox at {inbox_path}. Please process them.", state)
+            inbox_path = os.path.join(tinybot_root, "agents", agent_key.lower(), "inbox")
+            if os.path.exists(inbox_path):
+                sir_files = glob.glob(os.path.join(inbox_path, "*.SIR"))
+                for f in sir_files:
+                    pending_work.append((agent_key, agent, f))
+
+        # 2. Process the snapshot
+        for agent_key, agent, file_path in pending_work:
+            try:
+                with open(file_path, "r") as f:
+                    content = f.read()
+                
+                headers, body = parse_sir(content)
+                sender = headers.get("FROM", "Unknown")
+                subject = headers.get("SUBJECT", "No Subject")
+
+                if agent_key == active_key:
+                    # Priority 1: Deliver to the human-facing agent
+                    active_agent_messages.append(f"--- NEW MESSAGE ---\nFROM: {sender}\nSUBJECT: {subject}\nCONTENT:\n{body}\n--------------------")
+                    archive_sir_message(file_path)
+                    log_debug(f"Delivered message from {sender} to active agent {agent_key}")
+                else:
+                    # Priority 2: Full Tool-Calling Loop for background agents
+                    log_debug(f"Background processing: {agent_key} processing message from {sender}")
+                    
+                    # We give the agent full context but instruct it to be concise 
+                    # and detect completion to avoid infinite loops.
+                    wrapped_input = (
+                        f"SYSTEM: Automated request from {sender} (Subject: {subject}).\n"
+                        "Process this. If it's just a 'Thank you' or task complete, respond with '[NO_REPLY]'. "
+                        "Otherwise, provide your findings.\n\n"
+                        f"CONTENT: {body}"
+                    )
+                    
+                    agent.handle_prompt(wrapped_input, state)
+                    response = getattr(agent, "last_response", "")
+
+                    if sender != "Unknown" and response.strip() and "[NO_REPLY]" not in response:
+                        send_sir_message(agent_key, sender, response, subject=f"Re: {subject}")
+                    
+                    archive_sir_message(file_path)
+                    notifications.append(f"[{agent_key}] Processed task from {sender}")
+
+            except Exception as e:
+                log_debug(f"Error in messaging loop for {agent_key}: {e}")
+        
+        # Return background notifications and any messages meant for the active agent
+        return "\n\n".join(notifications), "\n\n".join(active_agent_messages)
 
     def process(self, user_input):
         """Main entry point for processing messages."""
-        self.check_agent_inboxes() # Check inboxes before every turn
-        return self.process_user_input(user_input)
+        # Check inboxes and get messages for the active agent
+        bg_notifications, active_agent_mail = self.check_agent_inboxes()
+        
+        # Inject incoming mail into the active agent's prompt
+        full_input = user_input
+        if active_agent_mail:
+            full_input = f"SYSTEM: Incoming messages for you:\n{active_agent_mail}\n\n---\n\nUSER: {user_input}"
+            
+        response = self.process_user_input(full_input)
+        
+        if bg_notifications:
+            return f"{bg_notifications}\n\n---\n\n{response}"
+        return response
 
     def process_user_input(self, user_input):
         if not user_input or not user_input.strip():
@@ -128,7 +194,7 @@ class TinyBotCore:
                 memory_path = getattr(active_agent, "memory_path", None)
                 if not memory_path:
                     # Fallback: try to find it in the agent's directory
-                    tinybot_root = os.environ.get("TINYBOT_ROOT", ".")
+                    tinybot_root = os.environ.get("TINYBOT_ROOT", os.path.expanduser("~/.tinybot"))
                     memory_path = os.path.join(
                         tinybot_root,
                         "agents",

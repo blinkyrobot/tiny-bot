@@ -109,6 +109,40 @@ Here are the skills available to you:
         full_prompt = f"You are {self.agent_name}. {identity_prompt}\n{skills_text}\n"
         return {"role": "system", "content": full_prompt}
 
+    def ask(self, prompt, system_prompt=None):
+        """
+        A stateless, lightweight LLM call that bypasses the history and tool-calling loop.
+        Useful for targeted 'Intelligence' tasks (summarization, decisions, etc.) within Python logic.
+        """
+        if system_prompt is None:
+            system_prompt = self._prepare_system_message()["content"]
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ]
+
+        if self.debug_mode:
+            print(f"DEBUG: Agent '{self.agent_name}' calling stateless ask().")
+
+        response = self.global_llm_caller(
+            self.model_config,
+            messages,
+            tools=None,
+            supports_tools=False,
+            debug=self.debug_mode,
+            log_file=self.log_file,
+        )
+
+        content = response.get("content", "")
+        # Strip thinking blocks if present and configured
+        if self.config.get("show_thinking") is False:
+            content = re.sub(
+                r"<think>.*?(?:</think>|$)", "", content, flags=re.DOTALL
+            ).strip()
+
+        return content
+
     def _call_llm_and_process_tools(self, messages_for_llm, max_iterations=10):
         if self.debug_mode:
             print(
@@ -323,13 +357,6 @@ class GenericAgent(BaseAgent):
         return False
 
     def handle_prompt(self, user_input, session_state):
-        if "SYSTEM: You have new messages in your inbox" in user_input:
-            match = re.search(r"inbox at ([\w/.-]+)", user_input)
-            inbox_path = match.group(1) if match else None
-            return self.dispatcher["execute_skill"](
-                skill_name="inbox_handler", parameters={"inbox_path": inbox_path}
-            )
-
         messages_for_llm = list(self.history)
 
         # Handle Document Q&A Mode (if context exists)
@@ -451,14 +478,9 @@ class SubAgent(BaseAgent):
         self.result = None
 
     def handle_prompt(self, user_input, session_state):
-        """Standard prompt handler with Inbox capability."""
-        print(f"DEBUG: SubAgent.handle_prompt called with input: {user_input[:200]}...")
-        if "SYSTEM: You have new messages in your inbox" in user_input:
-            match = re.search(r"inbox at ([\w/.-]+)", user_input)
-            inbox_path = match.group(1) if match else None
-            return self.dispatcher["execute_skill"](
-                skill_name="inbox_handler", parameters={"inbox_path": inbox_path}
-            )
+        """Standard prompt handler."""
+        if self.debug_mode:
+            print(f"DEBUG: SubAgent.handle_prompt called with input: {user_input[:200]}...")
 
         """
         For a sub-agent, the 'user_input' is the initial instruction to kick off its task.

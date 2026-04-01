@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import shutil
 from datetime import datetime
 from dotenv import dotenv_values
 
@@ -230,3 +231,92 @@ def discover_skills(agent_key=None):
     xml_lines.append("</available_skills>")
     
     return "\n".join(xml_lines)
+
+def parse_sir(content):
+    """
+    Parses a .SIR file content into headers and body.
+    """
+    headers = {}
+    parts = content.split("\n\n", 1)
+    header_lines = parts[0].split("\n")
+    for line in header_lines:
+        if ":" in line:
+            k, v = line.split(":", 1)
+            headers[k.strip().upper()] = v.strip()
+    
+    body = parts[1] if len(parts) > 1 else ""
+    return headers, body
+
+def send_sir_message(sender_name, recipient_key, content, subject="No Subject"):
+    """
+    Writes a .SIR file to the recipient's inbox.
+    """
+    tinybot_root = os.environ.get("TINYBOT_ROOT", os.path.expanduser("~/.tinybot"))
+
+    # Resolve recipient inbox
+    recipient_dir = os.path.join(tinybot_root, "agents", recipient_key.lower())
+    inbox_path = os.path.join(recipient_dir, "inbox")
+
+    if not os.path.exists(recipient_dir):
+        return f"Error: Recipient agent directory '{recipient_dir}' not found."
+
+    os.makedirs(inbox_path, exist_ok=True)
+
+    # Generate filename: timestamp_sender.SIR
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{timestamp}_{sender_name.replace(' ', '_')}.SIR"
+    file_path = os.path.join(inbox_path, filename)
+
+    # Construct .SIR content
+    sir_content = f"FROM: {sender_name}\n"
+    sir_content += f"TO: {recipient_key}\n"
+    sir_content += f"DATE: {datetime.now().isoformat()}\n"
+    sir_content += f"SUBJECT: {subject}\n\n"
+    sir_content += content
+
+    try:
+        with open(file_path, "w") as f:
+            f.write(sir_content)
+        return f"Message sent to {recipient_key} ({filename})."
+    except Exception as e:
+        return f"Error sending message to {recipient_key}: {e}"
+
+def archive_sir_message(file_path):
+    """
+    Moves a processed message to the archive directory.
+    """
+    if not os.path.exists(file_path):
+        return f"Error: File '{file_path}' not found."
+
+    try:
+        inbox_dir = os.path.dirname(file_path)
+        archive_dir = os.path.join(os.path.dirname(inbox_dir), "archive")
+        os.makedirs(archive_dir, exist_ok=True)
+
+        dest_path = os.path.join(archive_dir, os.path.basename(file_path))
+        shutil.move(file_path, dest_path)
+        return f"Archived {os.path.basename(file_path)} to {archive_dir}."
+    except Exception as e:
+        return f"Error archiving message: {e}"
+
+def get_agent_key_by_name(name, agents_dict):
+    """
+    Attempts to resolve an agent's key from its display name.
+    If no match is found, returns the name itself (case-normalized) as a fallback.
+    """
+    if not name:
+        return None
+        
+    normalized_name = name.lower().strip()
+    
+    # 1. Direct key match
+    if normalized_name in agents_dict:
+        return normalized_name
+        
+    # 2. Search by agent_name attribute
+    for key, agent in agents_dict.items():
+        if hasattr(agent, "agent_name") and agent.agent_name.lower() == normalized_name:
+            return key
+            
+    # 3. Fallback: just use the normalized name as the key
+    return normalized_name

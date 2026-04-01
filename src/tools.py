@@ -9,6 +9,7 @@ import re
 import difflib
 from datetime import datetime
 from llm import call_llm
+import utils
 
 secrets_path = os.path.join(
     os.environ.get("TINYBOT_ROOT", "."), "secrets", "api_keys.env"
@@ -254,6 +255,9 @@ def tool_spawn_subagent(agent, task_description, initial_prompt, required_tools)
 
 
 def tool_execute_skill(agent, skill_name, parameters):
+    print(
+        f"DEBUG: tool_execute_skill CALLED with skill={skill_name}, params={parameters}"
+    )
     # Robustly handle skill name if agent includes file extension
     clean_skill_name = skill_name.replace(".md", "").replace(".markdown", "")
 
@@ -261,15 +265,47 @@ def tool_execute_skill(agent, skill_name, parameters):
     tinybot_src = os.environ.get("TINYBOT_SRC", ".")
 
     # Try global skills first (in TINYBOT_SRC), then agent-specific skills (in TINYBOT_ROOT)
-    skill_file_path = os.path.join(tinybot_src, "skills", f"{clean_skill_name}.md")
+    skill_file_path_md = os.path.join(tinybot_src, "skills", f"{clean_skill_name}.md")
+    skill_file_path_py = os.path.join(tinybot_src, "skills", f"{clean_skill_name}.py")
+
+    # Check for Python skill first (Python-first architecture)
+    if os.path.exists(skill_file_path_py):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            clean_skill_name, skill_file_path_py
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        if hasattr(module, "run"):
+            print(f"DEBUG: Executing Python skill '{clean_skill_name}'")
+            return module.run(agent, parameters)
+        else:
+            return f"Error: Python skill '{clean_skill_name}' does not have a run(agent, parameters) function."
 
     # Check agent-specific skills if not found in global
+    skill_file_path = skill_file_path_md
     if not os.path.exists(skill_file_path) and hasattr(agent, "key"):
-        agent_skill_path = os.path.join(
+        agent_skill_path_py = os.path.join(
+            tinybot_root, "agents", agent.key, "skills", f"{clean_skill_name}.py"
+        )
+        if os.path.exists(agent_skill_path_py):
+            import importlib.util
+
+            spec = importlib.util.spec_from_file_location(
+                clean_skill_name, agent_skill_path_py
+            )
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            if hasattr(module, "run"):
+                print(f"DEBUG: Executing Agent-local Python skill '{clean_skill_name}'")
+                return module.run(agent, parameters)
+
+        agent_skill_path_md = os.path.join(
             tinybot_root, "agents", agent.key, "skills", f"{clean_skill_name}.md"
         )
-        if os.path.exists(agent_skill_path):
-            skill_file_path = agent_skill_path
+        if os.path.exists(agent_skill_path_md):
+            skill_file_path = agent_skill_path_md
 
     if not os.path.exists(skill_file_path):
         return f"Error: Skill '{clean_skill_name}' is not defined as a skill in the /skills directory or agent-specific skills directory."
@@ -376,6 +412,9 @@ def tool_execute_skill(agent, skill_name, parameters):
                     ]
                 elif "**Output**" in line:
                     current_step["type"] = "output"
+                elif "**Archive**" in line:
+                    current_step["type"] = "archive"
+                    current_step["arguments"] = {}
                 continue
 
             if current_step:
@@ -467,6 +506,7 @@ def tool_execute_skill(agent, skill_name, parameters):
             context["agent_key"] = agent.key
 
         for i, step in enumerate(skill_def.get("steps", [])):
+            print(f"DEBUG: Before step {i + 1}: context keys = {list(context.keys())}")
             if agent.debug_mode:
                 print(f"DEBUG: Executing skill step {i + 1}: {step.get('type')}")
             step_type = step.get("type")
@@ -474,10 +514,9 @@ def tool_execute_skill(agent, skill_name, parameters):
             def substitute(text):
                 if not isinstance(text, str):
                     return text
-                if agent.debug_mode:
-                    print(
-                        f"DEBUG substitute: text={text[:80]}..., context keys={list(context.keys())}"
-                    )
+                print(
+                    f"DEBUG substitute: text={text[:80]}..., context keys={list(context.keys())}"
+                )
                 for key, value in context.items():
                     val_str = str(value)
 
@@ -496,6 +535,7 @@ def tool_execute_skill(agent, skill_name, parameters):
                 return text
 
             if step_type == "tool":
+                print(f"DEBUG: EXECUTING TOOL STEP: {step}")
                 tool_name = step.get("tool")
                 raw_args = {
                     k: substitute(v) for k, v in step.get("arguments", {}).items()
@@ -518,10 +558,9 @@ def tool_execute_skill(agent, skill_name, parameters):
                     result = dispatcher[tool_name](**args)
                     if step.get("output_key"):
                         context[step["output_key"]] = result
-                        if agent.debug_mode:
-                            print(
-                                f"DEBUG: Stored tool result in context['{step['output_key']}']"
-                            )
+                        print(
+                            f"DEBUG: Stored in context['{step['output_key']}'] = {str(result)[:50]}..."
+                        )
                 else:
                     return f"Error executing skill '{skill_name}': Tool '{tool_name}' not found in dispatcher."
 
@@ -665,8 +704,53 @@ def tool_execute_skill(agent, skill_name, parameters):
                 result = sub_agent.handle_prompt(
                     prompt, {"debug": agent.debug_mode, "history": []}
                 )
+                print(f"DEBUG: LLM step DONE, result length={len(str(result))}")
                 if step.get("output_key"):
                     context[step.get("output_key")] = result
+
+            elif step_type == "archive":
+                import shutil
+
+                step_args = step.get("arguments", {})
+                source_output = substitute(step_args.get("source", ""))
+                destination = substitute(step_args.get("destination", ""))
+
+                # Extract file path from exec output format "CODE: X\nSTDOUT:\n/path/file.ext\nSTDERR:\n..."
+                file_path = None
+                lines = source_output.split("\n")
+                for i, line in enumerate(lines):
+                    if line.strip() == "STDOUT:" and i + 1 < len(lines):
+                        next_line = lines[i + 1].strip()
+                        if next_line.startswith("/"):
+                            file_path = next_line
+                            break
+
+                print(f"DEBUG: Archive: extracted file_path='{file_path}'")
+
+                print(
+                    f"DEBUG: Archive step: extracting file from output, destination={destination}"
+                )
+                if not file_path:
+                    context[step.get("output_key", "archive_result")] = (
+                        "Archive failed: No file path found in output"
+                    )
+                    print(f"DEBUG: No file path found")
+                else:
+                    try:
+                        dest_file = os.path.join(
+                            destination, os.path.basename(file_path)
+                        )
+                        os.makedirs(destination, exist_ok=True)
+                        shutil.move(file_path, dest_file)
+                        context[step.get("output_key", "archive_result")] = (
+                            f"Archived {file_path} to {dest_file}"
+                        )
+                        print(f"DEBUG: Successfully archived {file_path}")
+                    except Exception as e:
+                        context[step.get("output_key", "archive_result")] = (
+                            f"Archive failed: {e}"
+                        )
+                        print(f"DEBUG: Archive failed: {e}")
 
             elif step_type == "output":
                 output_val = substitute(step.get("value", "Skill completed."))
@@ -696,6 +780,49 @@ def tool_apply_edit_block(path, search, replace, fuzzy=True):
             return f"Error: SEARCH block not found in {path}. Please ensure exact matching if fuzzy=False."
     except Exception as e:
         return f"Error applying edit block to {path}: {e}"
+
+
+def tool_get_next_message(agent, inbox_path=None):
+    """
+    Finds the first .SIR file in the agent's inbox, reads it, and returns its content.
+    """
+    if not inbox_path:
+        if hasattr(agent, "agent_dir"):
+            inbox_path = os.path.join(agent.agent_dir, "inbox")
+        else:
+            return "Error: Agent does not have an 'agent_dir' and no 'inbox_path' provided."
+
+    if not os.path.exists(inbox_path):
+        return f"Error: Inbox path '{inbox_path}' does not exist."
+
+    import glob
+
+    sir_files = sorted(glob.glob(os.path.join(inbox_path, "*.SIR")))
+    if not sir_files:
+        return "No new messages."
+
+    first_file = sir_files[0]
+    try:
+        with open(first_file, "r") as f:
+            content = f.read()
+        return f"FILE: {first_file}\nCONTENT:\n{content}"
+    except Exception as e:
+        return f"Error reading message {first_file}: {e}"
+
+
+def tool_send_message(agent, recipient, content, subject="No Subject"):
+    """
+    Writes a .SIR file to the recipient's inbox.
+    """
+    sender = getattr(agent, "key", "Unknown")
+    return utils.send_sir_message(sender, recipient, content, subject)
+
+
+def tool_archive_message(agent, file_path):
+    """
+    Moves a processed message to the archive directory.
+    """
+    return utils.archive_sir_message(file_path)
 
 
 # New: Centralized tool definitions
@@ -817,6 +944,89 @@ ALL_TOOL_DEFINITIONS = {
             },
         },
     },
+    "get_next_message": {
+        "type": "function",
+        "function": {
+            "name": "get_next_message",
+            "description": "Get the next message from the agent's inbox.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "inbox_path": {
+                        "type": "string",
+                        "description": "Optional: Path to the inbox. Defaults to agent's own inbox.",
+                    }
+                },
+            },
+        },
+    },
+    "send_message": {
+        "type": "function",
+        "function": {
+            "name": "send_message",
+            "description": "Send a message to another agent.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "recipient": {
+                        "type": "string",
+                        "description": "The name or key of the recipient agent.",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "The body of the message.",
+                    },
+                    "subject": {
+                        "type": "string",
+                        "description": "Optional: Subject of the message.",
+                    },
+                },
+                "required": ["recipient", "content"],
+            },
+        },
+    },
+    "archive_message": {
+        "type": "function",
+        "function": {
+            "name": "archive_message",
+            "description": "Archive a processed message file.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Path to the message file to archive.",
+                    }
+                },
+                "required": ["file_path"],
+            },
+        },
+    },
+    "spawn_subagent": {
+        "type": "function",
+        "function": {
+            "name": "spawn_subagent",
+            "description": "Spawn a specialized sub-agent for a specific task.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_description": {
+                        "type": "string",
+                        "description": "The specific task for the sub-agent.",
+                    },
+                    "initial_prompt": {
+                        "type": "string",
+                        "description": "The first message to send to the sub-agent.",
+                    },
+                    "required_tools": {
+                        "type": "string",
+                        "description": "Comma-separated list of tools the sub-agent needs.",
+                    },
+                },
+                "required": ["task_description", "initial_prompt", "required_tools"],
+            },
+        },
+    },
 }
 
 # New: Centralized tool functions
@@ -827,12 +1037,20 @@ ALL_TOOL_FUNCTIONS = {
     "apply_edit_block": tool_apply_edit_block,
     "execute_skill": tool_execute_skill,
     "web_search": tool_web_search,
+    "get_next_message": tool_get_next_message,
+    "send_message": tool_send_message,
+    "archive_message": tool_archive_message,
+    "spawn_subagent": tool_spawn_subagent,
 }
 
 
 def get_tools_definition(tool_names=None):
     if tool_names is None:
         return list(ALL_TOOL_DEFINITIONS.values())
+
+    if isinstance(tool_names, str):
+        tool_names = [t.strip() for t in tool_names.split(",") if t.strip()]
+
     return [
         ALL_TOOL_DEFINITIONS[name]
         for name in tool_names
@@ -842,6 +1060,10 @@ def get_tools_definition(tool_names=None):
 
 def get_dispatcher(agent, tool_names=None):
     dispatcher = {}
+
+    if isinstance(tool_names, str):
+        tool_names = [t.strip() for t in tool_names.split(",") if t.strip()]
+
     tools_to_load = tool_names if tool_names is not None else ALL_TOOL_FUNCTIONS.keys()
 
     for name in tools_to_load:
@@ -863,6 +1085,12 @@ def get_dispatcher(agent, tool_names=None):
         elif name == "web_search":
             dispatcher[name] = lambda query, n=name: ALL_TOOL_FUNCTIONS[n](
                 agent.config, query
+            )
+        elif name in ["get_next_message", "send_message", "archive_message"]:
+            dispatcher[name] = (
+                lambda *args, n=name, **kwargs: ALL_TOOL_FUNCTIONS[n](
+                    agent, *args, **kwargs
+                )
             )
         elif name in ALL_TOOL_FUNCTIONS:
             dispatcher[name] = ALL_TOOL_FUNCTIONS[name]
