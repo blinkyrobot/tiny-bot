@@ -92,12 +92,15 @@ class BaseAgent:
     def _prepare_system_message(self):
         skills_text = ""
         if self.available_skills:
-            skills_text = f"""### AVAILABLE SKILLS ###
-You have access to a set of skills defined in markdown files.
-To use a skill, you MUST use the `execute_skill` tool with the appropriate `skill_name` and `parameters`.
+            skills_text = f"""### AVAILABLE SKILLS & API MANIFESTS ###
+You have access to a set of skills and API manifests. 
+- Skills can be Markdown (.md) or Python (.py) files.
+- API Manifests (.yaml) provide access to external services (use via the 'api_runner' skill).
+
+To use any of these, you MUST use the `execute_skill` tool with the appropriate `skill_name` and `parameters`.
 IMPORTANT: Do NOT output the tool call as text in your response. Instead, trigger the `execute_skill` function using your tool-calling capability.
 
-Here are the skills available to you:
+Here is the structured list of resources available to you:
 {self.available_skills}
 """
 
@@ -109,6 +112,33 @@ Here are the skills available to you:
         full_prompt = f"You are {self.agent_name}. {identity_prompt}\n{skills_text}\n"
         return {"role": "system", "content": full_prompt}
 
+    def log_trace(self, message):
+        """Logs a high-level trace message to the session transcript for visibility."""
+        if self.debug_mode:
+            print(f"TRACE [{self.agent_name}]: {message}")
+        log_message(self.log_file, "trace", message, self.agent_name)
+
+    def think(self, context, task_description, system_prompt_override=None):
+        """
+        A highly focused version of ask() designed for 'Intelligence Nodes'.
+        Takes a raw data context and a specific reasoning task.
+        """
+        if system_prompt_override:
+            system_prompt = system_prompt_override
+        else:
+            system_prompt = (
+                f"You are {self.agent_name}, a specialized reasoning node.\n"
+                f"Your identity: {self.agent_system_prompt}\n"
+                "Focus ONLY on the provided context. Do NOT use outside knowledge unless specified."
+            )
+
+        prompt = f"### CONTEXT DATA ###\n{context}\n\n### TASK ###\n{task_description}"
+        
+        self.log_trace(f"Thinking about task: {task_description[:80]}...")
+        result = self.ask(prompt, system_prompt=system_prompt)
+        self.log_trace(f"Reasoning complete ({len(result)} chars).")
+        return result
+
     def ask(self, prompt, system_prompt=None):
         """
         A stateless, lightweight LLM call that bypasses the history and tool-calling loop.
@@ -116,6 +146,10 @@ Here are the skills available to you:
         """
         if system_prompt is None:
             system_prompt = self._prepare_system_message()["content"]
+
+        # Log the start of the 'ask' operation
+        prompt_summary = (prompt[:100] + "...") if len(prompt) > 100 else prompt
+        self.log_trace(f"Requesting intelligence node: {prompt_summary}")
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -140,6 +174,9 @@ Here are the skills available to you:
             content = re.sub(
                 r"<think>.*?(?:</think>|$)", "", content, flags=re.DOTALL
             ).strip()
+
+        # Log the completion of the 'ask' operation
+        self.log_trace(f"Intelligence node response received ({len(content)} chars).")
 
         return content
 
@@ -270,7 +307,6 @@ class GenericAgent(BaseAgent):
         required_tools = agent_def.get("tools")
         if not required_tools:
             required_tools = [
-                "exec",
                 "read",
                 "write",
                 "apply_edit_block",

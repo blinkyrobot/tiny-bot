@@ -8,19 +8,19 @@ Lists all available skills and identifies which ones are most relevant to the us
 
 ## Steps
 1. **Step: exec**
-   - `command`: `ls skills/*.md agents/{{agent_key}}/skills/*.md 2>/dev/null`
+   - `command`: `ls skills/*.md skills/*.py api/*.yaml agents/{{agent_key}}/skills/*.md 2>/dev/null`
    - **Output:** `skills_files`
 
 2. **LLM**
-   - **System Prompt:** You are a helpful assistant that identifies relevant skills for a robot assistant.
+   - **System Prompt:** You are a helpful assistant that identifies relevant skills and API manifests for a robot assistant.
    - **Prompt:**
 ```
-The robot assistant needs to know which skills are available to help with: "{{query}}"
+The robot assistant needs to know which skills or API manifests are available to help with: "{{query}}"
 
-Here are the available skill files in the 'skills/' directory:
+Here are the available skill files and API manifests:
 {{skills_files}}
 
-Please provide a complete list of all these skills. For each skill, briefly describe what it likely does based on its filename. Then, explicitly highlight which skill(s) are the MOST relevant to the specific query "{{query}}".
+Please provide a complete list of all these resources. For each resource, briefly describe what it likely does based on its filename and path (e.g., api/manifold.yaml provides access to prediction markets). Then, explicitly highlight which resources are the MOST relevant to the specific query "{{query}}".
 ```
    - **Output:** `recommendations`
 

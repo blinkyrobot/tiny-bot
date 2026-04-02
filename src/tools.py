@@ -114,21 +114,61 @@ STDERR:
 
 def tool_read(path, tail=None):
     try:
-        expanded_path = os.path.expanduser(path)
-        print(f"DEBUG: Attempting to read file at path: {expanded_path} (tail: {tail})")
-        with open(expanded_path, "r") as f:
-            if tail:
-                from collections import deque
+        tinybot_root = os.path.abspath(os.environ.get("TINYBOT_ROOT", "."))
+        
+        # 1. Try absolute or relative to root first
+        full_path = os.path.abspath(os.path.join(tinybot_root, path))
+        
+        # Security check
+        if not full_path.startswith(tinybot_root):
+             # Try expanding user path, but check if it's still outside
+             expanded_path = os.path.expanduser(path)
+             if not os.path.abspath(expanded_path).startswith(tinybot_root):
+                 return f"Error: Read access restricted to {tinybot_root}."
+             full_path = expanded_path
 
-                lines = deque(f, maxlen=int(tail))
-                content = "".join(lines)
-                # Enforce a safety character limit for tail reads
-                if len(content) > 10000:
-                    content = "... [truncated older lines] ...\n" + content[-10000:]
-                return content
-            return f.read()
+        if os.path.exists(full_path) and os.path.isfile(full_path):
+            return _read_file_contents(full_path, tail)
+
+        # 2. Smart Search: If not found, look for filename in the project
+        filename = os.path.basename(path)
+        print(f"DEBUG: File '{path}' not found. Searching for '{filename}' in {tinybot_root}...")
+        
+        matches = []
+        for root, dirs, files in os.walk(tinybot_root):
+            if filename in files:
+                matches.append(os.path.join(root, filename))
+            
+            # Prune search to avoid massive trees (optional but recommended)
+            if ".git" in dirs: dirs.remove(".git")
+            if "node_modules" in dirs: dirs.remove("node_modules")
+            if "__pycache__" in dirs: dirs.remove("__pycache__")
+
+        if len(matches) == 1:
+            found_path = matches[0]
+            rel_path = os.path.relpath(found_path, tinybot_root)
+            print(f"DEBUG: Found unique match: {rel_path}. Reading it.")
+            content = _read_file_contents(found_path, tail)
+            return f"--- FILE FOUND AT: {rel_path} ---\n{content}"
+        elif len(matches) > 1:
+            rel_matches = [os.path.relpath(m, tinybot_root) for m in matches]
+            return f"Error: File '{path}' not found, but multiple files with that name exist. Please specify which one:\n- " + "\n- ".join(rel_matches)
+        
+        return f"Error: File '{path}' not found and no similar file found in {tinybot_root}."
     except Exception as e:
         return f"Error reading file: {e}"
+
+
+def _read_file_contents(path, tail=None):
+    with open(path, "r") as f:
+        if tail:
+            from collections import deque
+            lines = deque(f, maxlen=int(tail))
+            content = "".join(lines)
+            if len(content) > 10000:
+                content = "... [truncated older lines] ...\n" + content[-10000:]
+            return content
+        return f.read()
 
 
 def tool_write(path, content, append=True):
@@ -278,8 +318,16 @@ def tool_execute_skill(agent, skill_name, parameters):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         if hasattr(module, "run"):
+            if hasattr(agent, "log_trace"):
+                agent.log_trace(f"Starting Python skill: {clean_skill_name}")
+            
             print(f"DEBUG: Executing Python skill '{clean_skill_name}'")
-            return module.run(agent, parameters)
+            result = module.run(agent, parameters)
+            
+            if hasattr(agent, "log_trace"):
+                agent.log_trace(f"Python skill completed: {clean_skill_name}")
+            
+            return result
         else:
             return f"Error: Python skill '{clean_skill_name}' does not have a run(agent, parameters) function."
 
@@ -298,8 +346,16 @@ def tool_execute_skill(agent, skill_name, parameters):
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             if hasattr(module, "run"):
+                if hasattr(agent, "log_trace"):
+                    agent.log_trace(f"Starting Agent-local Python skill: {clean_skill_name}")
+                
                 print(f"DEBUG: Executing Agent-local Python skill '{clean_skill_name}'")
-                return module.run(agent, parameters)
+                result = module.run(agent, parameters)
+                
+                if hasattr(agent, "log_trace"):
+                    agent.log_trace(f"Agent-local Python skill completed: {clean_skill_name}")
+                
+                return result
 
         agent_skill_path_md = os.path.join(
             tinybot_root, "agents", agent.key, "skills", f"{clean_skill_name}.md"
@@ -309,6 +365,9 @@ def tool_execute_skill(agent, skill_name, parameters):
 
     if not os.path.exists(skill_file_path):
         return f"Error: Skill '{clean_skill_name}' is not defined as a skill in the /skills directory or agent-specific skills directory."
+
+    if hasattr(agent, "log_trace"):
+        agent.log_trace(f"Starting Markdown skill: {clean_skill_name}")
 
     with open(skill_file_path, "r") as f:
         content = f.read()
@@ -756,7 +815,14 @@ def tool_execute_skill(agent, skill_name, parameters):
                 output_val = substitute(step.get("value", "Skill completed."))
                 if agent.debug_mode:
                     print(f"DEBUG: Skill final output: {output_val[:100]}...")
+                
+                if hasattr(agent, "log_trace"):
+                    agent.log_trace(f"Markdown skill completed: {skill_name}")
+
                 return output_val
+
+        if hasattr(agent, "log_trace"):
+            agent.log_trace(f"Markdown skill completed: {skill_name}")
 
         return "Skill completed without a specific output value."
 

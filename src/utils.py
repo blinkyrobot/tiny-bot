@@ -172,7 +172,13 @@ def discover_skills(agent_key=None):
         agent_skills_dir = os.path.join(tinybot_root, "agents", agent_key, "skills")
         if os.path.exists(agent_skills_dir):
             skill_dirs.append(agent_skills_dir)
+    
     skill_dirs.append(os.path.join(tinybot_src, "skills"))
+    
+    # New: Also discover API manifests
+    api_dir = os.path.join(tinybot_src, "api")
+    if os.path.exists(api_dir):
+        skill_dirs.append(api_dir)
 
     skills_data = []
     seen_skills = set()
@@ -182,37 +188,71 @@ def discover_skills(agent_key=None):
             continue
             
         for entry in os.scandir(skills_dir):
-            if entry.is_file() and entry.name.endswith(".md"):
-                skill_name = entry.name.replace(".md", "")
-                if skill_name in seen_skills:
-                    continue
+            if not entry.is_file():
+                continue
                 
+            skill_name = entry.name
+            description = "No description available."
+            
+            # Handle Markdown (.md)
+            if entry.name.endswith(".md"):
+                skill_name = entry.name.replace(".md", "")
+                if skill_name in seen_skills: continue
                 try:
                     with open(entry.path, "r") as f:
                         content = f.read()
-                    
                     desc_match = re.search(r"## Description\n\n?(.*?)(?:\n\n?##|\Z)", content, re.DOTALL)
-                    description = desc_match.group(1).strip() if desc_match else "No description available."
-                    
-                    # Keep it concise: first sentence or first line
-                    description = description.split(". ")[0].split("\n")[0].strip()
-                    if description and not description.endswith("."):
-                        description += "."
+                    if desc_match:
+                        description = desc_match.group(1).strip()
+                except: pass
 
-                    # Use abspath for comparison to handle relative paths like "."
-                    abs_skills_dir = os.path.abspath(skills_dir)
-                    abs_tinybot_src = os.path.abspath(tinybot_src)
-                    abs_tinybot_root = os.path.abspath(tinybot_root)
+            # Handle Python (.py)
+            elif entry.name.endswith(".py"):
+                skill_name = entry.name.replace(".py", "")
+                if skill_name in seen_skills: continue
+                # We can't easily parse docstrings without importing, but we can try a simple regex for first comment/docstring
+                try:
+                    with open(entry.path, "r") as f:
+                        content = f.read()
+                    # Try to find a docstring or top-level comment
+                    doc_match = re.search(r'"""(.*?)"""', content, re.DOTALL)
+                    if doc_match:
+                        description = doc_match.group(1).strip()
+                except: pass
 
-                    base_path = tinybot_src if abs_skills_dir.startswith(abs_tinybot_src) else tinybot_root
-                    skills_data.append({
-                        "name": skill_name,
-                        "description": description,
-                        "path": os.path.relpath(entry.path, base_path)
-                    })
-                    seen_skills.add(skill_name)
-                except Exception as e:
-                    print(f"Warning: Could not parse skill file {entry.name}: {e}")
+            # Handle YAML (.yaml) - These are API Manifests
+            elif entry.name.endswith(".yaml"):
+                skill_name = entry.name.replace(".yaml", "")
+                # We keep manifests distinct by prepending "API: " or just the service name
+                if f"API:{skill_name}" in seen_skills: continue
+                try:
+                    import yaml
+                    with open(entry.path, "r") as f:
+                        manifest = yaml.safe_load(f)
+                    description = f"Native API Manifest for {manifest.get('name', skill_name)}. Use via api_runner."
+                    skill_name = f"API:{skill_name}"
+                except: pass
+            else:
+                continue
+
+            if skill_name in seen_skills:
+                continue
+
+            # Clean up description (first sentence/line)
+            description = description.split(". ")[0].split("\n")[0].strip()
+            if description and not description.endswith("."):
+                description += "."
+
+            abs_skills_dir = os.path.abspath(skills_dir)
+            abs_tinybot_src = os.path.abspath(tinybot_src)
+            base_path = tinybot_src if abs_skills_dir.startswith(abs_tinybot_src) else tinybot_root
+            
+            skills_data.append({
+                "name": skill_name,
+                "description": description,
+                "path": os.path.relpath(entry.path, base_path)
+            })
+            seen_skills.add(skill_name)
 
     if not skills_data:
         return ""
