@@ -1,0 +1,35 @@
+name: manifold
+base_url: https://api.manifold.markets/v0
+auth:
+  type: header
+  key_name: Authorization
+  value_template: "Key {{MANIFOLD_API_KEY}}"
+
+endpoints:
+  get_me:
+    path: /me
+    method: GET
+    description: "Start here every check-in."
+
+  search:
+    path: /search-markets
+    method: GET
+    params:
+      term: "{{query}}"
+      limit: 5
+      sort: "{{sort}}"
+    description: "Search for prediction markets by keyword with optional sort (e.g. most-popular)."
+
+  get_market:
+    path: /slug/{{slug}}
+    method: GET
+    description: "Get full details of a specific market using its slug."
+
+  make_bet:
+    path: /bet
+    method: POST
+    body:
+      amount: "{{amount}}"
+      outcome: "{{outcome}}"
+      contractId: "{{contractId}}"
+    description: "Place a bet on a market (requires YES/NO outcome and amount)."

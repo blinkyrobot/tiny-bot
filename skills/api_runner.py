@@ -5,9 +5,20 @@ import os
 import re
 
 def run(agent, parameters):
+    """
+    Executes an API call defined in a YAML manifest.
+    
+    Parameters:
+    - service (str): The name of the service (e.g., 'moltbook').
+    - action (str): The endpoint action to perform (e.g., 'post_update').
+    - params (dict): The dynamic values to inject into the request.
+    - summarize (bool): If True, returns an AI summary of the response. Use this for browsing. 
+                        If False (default), returns raw JSON data. Use this for tasks requiring IDs.
+    """
     service_name = parameters.get("service")
     action_name = parameters.get("action")
     user_params = parameters.get("params", {})
+    should_summarize = parameters.get("summarize", False)
 
     if not service_name or not action_name:
         return "Error: Both 'service' and 'action' parameters are required."
@@ -42,7 +53,13 @@ def run(agent, parameters):
         for k, v in secrets.items():
             text = text.replace(f"{{{{{k}}}}}", str(v))
         
-        return text
+        # Attempt to convert to numeric if it looks like a number
+        if text.isdigit():
+            return int(text)
+        try:
+            return float(text)
+        except ValueError:
+            return text
 
     # Handle resolution for dictionaries recursively
     def resolve_dict(d):
@@ -93,10 +110,15 @@ def run(agent, parameters):
         # 6. Automatic Intelligence/Summarization (Optional)
         data = response.json()
         
-        # If the data is large, use think() to summarize
-        if len(json.dumps(data)) > 2000:
-            task = f"Summarize the following API response from {service_name}/{action_name}. Highlight key information relevant to the user's intent."
-            return agent.think(json.dumps(data), task)
+        # Only summarize if requested OR if the data is catastrophically large (>10,000 chars)
+        data_str = json.dumps(data)
+        if should_summarize or len(data_str) > 10000:
+            task = (
+                f"Summarize the following API response from {service_name}/{action_name}. "
+                f"CRITICAL: Highlight key information but MUST preserve all unique IDs, slugs, or contract addresses "
+                f"so they can be used in subsequent tool calls."
+            )
+            return agent.think(data_str, task)
         
         return data
 

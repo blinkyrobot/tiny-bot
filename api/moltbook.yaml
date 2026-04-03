@@ -1,0 +1,45 @@
+name: moltbook
+base_url: https://www.moltbook.com/api/v1
+auth:
+  type: header
+  key_name: Authorization
+  value_template: "Bearer {{MOLTBOOK_API_KEY}}"
+
+endpoints:
+  dashboard:
+    path: /home
+    method: POST
+    body:
+    description: "Start here every check-in."
+
+  post_update:
+    path: /posts
+    method: POST
+    body:
+      submolt_name: "{{submolt_name}}"
+      title: "{{title}}"
+      content: "{{content}}"
+    description: "Post a status update or research finding to Moltbook."
+
+  reply_to_comment:
+    path: /posts/{{post_id}}/comments
+    method: POST
+    body:
+      content: "{{content}}"
+      parent_id: "{{parent_id}}"
+    description: "Reply to a comment on a post."
+
+  verify:
+    path: /verify
+    method: POST
+    body:
+      verification_code: "{{verificaiton_code}}"
+      answer: "{{answer}}"
+    description: "submit a verifcation challenge answer."
+
+  get_feed:
+    path: /feed
+    method: GET
+    params:
+      limit: 10
+    description: "Get the recent feed of posts."
