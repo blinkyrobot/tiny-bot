@@ -22,6 +22,15 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+@app.get("/health")
+async def health():
+    state = core.session_manager.get_state()
+    return {
+        "status": "online",
+        "agent": state.get("active_agent_key", "Unknown"),
+        "debug": state.get("debug", False)
+    }
+
 @app.get("/history")
 async def get_history():
     state = core.session_manager.get_state()

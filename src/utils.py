@@ -159,6 +159,33 @@ def load_agent_definition(path):
         print(f"Error loading agent definition from {path}: {e}")
         return None
 
+def get_skill_docs(skill_name):
+    """
+    Returns the documentation (schema) for a given skill.
+    Searches for schema.yaml in global and agent-specific skill directories.
+    """
+    tinybot_root = os.environ.get("TINYBOT_ROOT", ".")
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    tinybot_src = os.environ.get("TINYBOT_SRC", project_root)
+    
+    # Priority: Agent-specific -> Global
+    # Also check for subdirectories (e.g., skills/manifold/schema.yaml)
+    search_paths = [
+        os.path.join(tinybot_src, "skills", skill_name, "schema.yaml"),
+        os.path.join(tinybot_src, "skills", f"{skill_name}.yaml"),
+        os.path.join(tinybot_src, "skills", f"{skill_name}.schema.yaml"),
+    ]
+    
+    for path in search_paths:
+        if os.path.exists(path):
+            try:
+                import yaml
+                with open(path, "r") as f:
+                    return yaml.safe_load(f)
+            except:
+                pass
+    return None
+
 def discover_skills(agent_key=None):
     """Scans global and agent-specific skills directories and returns an XML summary."""
     tinybot_root = os.environ.get("TINYBOT_ROOT", ".")
@@ -187,6 +214,27 @@ def discover_skills(agent_key=None):
         if not os.path.exists(skills_dir):
             continue
             
+        # First pass: Check for directories with schema.yaml (Modular Skills)
+        for entry in os.scandir(skills_dir):
+            if entry.is_dir():
+                schema_path = os.path.join(entry.path, "schema.yaml")
+                if os.path.exists(schema_path):
+                    skill_name = entry.name
+                    if skill_name in seen_skills: continue
+                    try:
+                        import yaml
+                        with open(schema_path, "r") as f:
+                            manifest = yaml.safe_load(f)
+                        description = manifest.get("description", "Modular skill.")
+                        # Include actions if present
+                        if "actions" in manifest:
+                            description += "\n  Actions: " + ", ".join(manifest["actions"].keys())
+                        
+                        seen_skills.add(skill_name)
+                        skills_data.append(f"- {skill_name}: {description}")
+                    except: pass
+
+        # Second pass: Standard file discovery
         for entry in os.scandir(skills_dir):
             if not entry.is_file():
                 continue
@@ -202,19 +250,21 @@ def discover_skills(agent_key=None):
                     with open(entry.path, "r") as f:
                         content = f.read()
                     desc_match = re.search(r"## Description\n\n?(.*?)(?:\n\n?##|\Z)", content, re.DOTALL)
+                    params_match = re.search(r"## Parameters\n\n?(.*?)(?:\n\n?##|\Z)", content, re.DOTALL)
                     if desc_match:
                         description = desc_match.group(1).strip()
+                        if params_match:
+                            params_text = params_match.group(1).strip()
+                            description += f"\n  Parameters:\n  {params_text}"
                 except: pass
 
             # Handle Python (.py)
             elif entry.name.endswith(".py"):
                 skill_name = entry.name.replace(".py", "")
                 if skill_name in seen_skills: continue
-                # We can't easily parse docstrings without importing, but we can try a simple regex for first comment/docstring
                 try:
                     with open(entry.path, "r") as f:
                         content = f.read()
-                    # Try to find a docstring or top-level comment
                     doc_match = re.search(r'"""(.*?)"""', content, re.DOTALL)
                     if doc_match:
                         description = doc_match.group(1).strip()
@@ -223,7 +273,6 @@ def discover_skills(agent_key=None):
             # Handle YAML (.yaml) - These are API Manifests
             elif entry.name.endswith(".yaml"):
                 skill_name = entry.name.replace(".yaml", "")
-                # We keep manifests distinct by prepending "API: " or just the service name
                 if f"API:{skill_name}" in seen_skills: continue
                 try:
                     import yaml
@@ -237,40 +286,14 @@ def discover_skills(agent_key=None):
 
             if skill_name in seen_skills:
                 continue
-
-            # Clean up description (first sentence/line)
-            description = description.split(". ")[0].split("\n")[0].strip()
-            if description and not description.endswith("."):
-                description += "."
-
-            abs_skills_dir = os.path.abspath(skills_dir)
-            abs_tinybot_src = os.path.abspath(tinybot_src)
-            base_path = tinybot_src if abs_skills_dir.startswith(abs_tinybot_src) else tinybot_root
             
-            skills_data.append({
-                "name": skill_name,
-                "description": description,
-                "path": os.path.relpath(entry.path, base_path)
-            })
             seen_skills.add(skill_name)
+            skills_data.append(f"- {skill_name}: {description}")
 
     if not skills_data:
-        return ""
-
-    xml_lines = ["<available_skills>"]
-    for skill in sorted(skills_data, key=lambda x: x["name"]):
-        # Manual XML escaping for basic safety
-        name = skill['name'].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        desc = skill['description'].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        loc = skill['path'].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        xml_lines.append("  <skill>")
-        xml_lines.append(f"    <name>{name}</name>")
-        xml_lines.append(f"    <description>{desc}</description>")
-        xml_lines.append(f"    <location>{loc}</location>")
-        xml_lines.append("  </skill>")
-    xml_lines.append("</available_skills>")
+        return "No skills found."
     
-    return "\n".join(xml_lines)
+    return "\n".join(sorted(skills_data))
 
 def parse_sir(content):
     """

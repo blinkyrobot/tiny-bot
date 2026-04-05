@@ -17,6 +17,7 @@ from utils import (
 )
 from llm import call_llm
 from session_manager import SessionManager
+from mcp_client import get_mcp_client
 
 
 class TinyBotCore:
@@ -25,13 +26,27 @@ class TinyBotCore:
         self.global_llm_caller_func = call_llm
         self.is_web_interface = is_web_interface
         self.session_manager = SessionManager()
+        
+        # Initialize MCP Client
+        self.mcp_client = get_mcp_client(self.config)
+        mcp_skills = ""
+        try:
+            # List available MCP servers instead of every individual tool
+            servers = self.config.get("mcpServers", {})
+            if servers:
+                mcp_skills += "\n### AVAILABLE MCP SERVERS ###"
+                for server_name in servers:
+                    mcp_skills += f"\n- {server_name} (MCP Server): Use `mcp_list_server_tools` to see what this server can do."
+        except Exception as e:
+            log_debug(f"Error discovering MCP servers: {e}")
 
         # Initialize base state
+        self.mcp_manifest = mcp_skills
         initial_state = {
             "debug": self.config.get("debug", False),
             "log_file": setup_logger(self.config, is_web_interface=is_web_interface),
             "active_agent_key": self.config.get("default_agent", "GeneralChatAgent"),
-            "available_skills": discover_skills(),
+            "available_skills": discover_skills() + self.mcp_manifest,
         }
         self.session_manager.state.update(initial_state)
 
@@ -46,6 +61,10 @@ class TinyBotCore:
     def shutdown(self):
         """Lifecycle hook for engine shutdown."""
         log_debug("TinyBot Engine Core Shutting down... *clank*")
+        try:
+            self.mcp_client.shutdown()
+        except Exception as e:
+            log_debug(f"Error during MCP client shutdown: {e}")
         return True
 
     def register_agent(self, agent_def):
@@ -61,7 +80,8 @@ class TinyBotCore:
                 module = importlib.import_module(module_name)
                 agent_class = getattr(module, class_name)
 
-                agent_skills = discover_skills(key)
+                # Combine filesystem skills with discovered MCP tools
+                agent_skills = discover_skills(key) + self.mcp_manifest
                 agent_instance = agent_class(
                     self.config,
                     agent_def,

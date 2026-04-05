@@ -92,15 +92,21 @@ class BaseAgent:
     def _prepare_system_message(self):
         skills_text = ""
         if self.available_skills:
-            skills_text = f"""### AVAILABLE SKILLS & API MANIFESTS ###
-You have access to a set of skills and API manifests. 
-- Skills can be Markdown (.md) or Python (.py) files.
-- API Manifests (.yaml) provide access to external services (use via the 'api_runner' skill).
+            skills_text = f"""### AVAILABLE SKILLS & TOOLS ###
+You have access to a set of skills and external MCP tools. 
 
-To use any of these, you MUST use the `execute_skill` tool with the appropriate `skill_name` and `parameters`.
-IMPORTANT: Do NOT output the tool call as text in your response. Instead, trigger the `execute_skill` function using your tool-calling capability.
+1. **Standard Skills** (Markdown or Python): 
+   To use these, you MUST use the `execute_skill` tool with the appropriate `skill_name` and `parameters`.
+   
+2. **MCP Servers** (Indicated by '(MCP Server)'):
+   These are external service providers that offer tools.
+   - To see the tools available on a specific server, use `mcp_list_server_tools` with the `server_name` (e.g., 'manifold').
+   - To see the parameters and schema for a specific namespaced tool, use `mcp_get_tool_info` with the namespaced name (e.g., 'manifold:place_bet').
+   - To execute an MCP tool, use `mcp_call` with the namespaced name and arguments.
 
-Here is the structured list of resources available to you:
+IMPORTANT: Do NOT output the tool call as text in your response. Instead, trigger the appropriate tool function using your tool-calling capability.
+
+Here is the manifest of resources available to you:
 {self.available_skills}
 """
 
@@ -249,8 +255,8 @@ Here is the structured list of resources available to you:
                     if tool_name in self.dispatcher:
                         output = self.dispatcher[tool_name](**args)
 
-                        if isinstance(output, str) and len(output) > 5000:
-                            output = output[:5000] + "\n... [truncated]"
+                        if isinstance(output, str) and len(output) > 15000:
+                            output = output[:15000] + "\n... [truncated]"
 
                         tool_msg = {
                             "role": "tool",
@@ -307,6 +313,9 @@ class GenericAgent(BaseAgent):
         required_tools = agent_def.get("tools")
         if not required_tools:
             required_tools = [
+                "mcp_call",
+                "mcp_get_tool_info",
+                "mcp_list_server_tools",
                 "read",
                 "write",
                 "apply_edit_block",

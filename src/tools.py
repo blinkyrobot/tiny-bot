@@ -115,22 +115,16 @@ STDERR:
 def tool_read(path, tail=None):
     try:
         tinybot_root = os.path.abspath(os.environ.get("TINYBOT_ROOT", "."))
-        
-        # 1. Try absolute or relative to root first
-        full_path = os.path.abspath(os.path.join(tinybot_root, path))
-        
-        # Security check
-        if not full_path.startswith(tinybot_root):
-             # Try expanding user path, but check if it's still outside
-             expanded_path = os.path.expanduser(path)
-             if not os.path.abspath(expanded_path).startswith(tinybot_root):
-                 return f"Error: Read access restricted to {tinybot_root}."
-             full_path = expanded_path
+
+        # Try absolute path directly or relative to root
+        full_path = os.path.expanduser(path)
+        if not os.path.isabs(full_path):
+            full_path = os.path.abspath(os.path.join(tinybot_root, path))
 
         if os.path.exists(full_path) and os.path.isfile(full_path):
             return _read_file_contents(full_path, tail)
 
-        # 2. Smart Search: If not found, look for filename in the project
+        # Smart Search: If not found, look for filename in the project
         filename = os.path.basename(path)
         print(f"DEBUG: File '{path}' not found. Searching for '{filename}' in {tinybot_root}...")
         
@@ -299,7 +293,24 @@ def tool_execute_skill(agent, skill_name, parameters):
         f"DEBUG: tool_execute_skill CALLED with skill={skill_name}, params={parameters}"
     )
     # Robustly handle skill name if agent includes file extension
-    clean_skill_name = skill_name.replace(".md", "").replace(".markdown", "")
+    clean_skill_name = skill_name.replace(".md", "").replace(".markdown", "").replace(".py", "")
+
+    # VALIDATION: Check schema if it exists
+    schema = utils.get_skill_docs(clean_skill_name)
+    if schema and "actions" in schema:
+        action = parameters.get("action")
+        if not action:
+            return f"Error: 'action' parameter is required for skill '{clean_skill_name}'.\n\nUsage Cheatsheet:\n{json.dumps(schema.get('actions', {}), indent=2)}"
+        
+        if action not in schema["actions"]:
+            return f"Error: Unknown action '{action}' for skill '{clean_skill_name}'.\n\nAvailable Actions:\n- " + "\n- ".join(schema["actions"].keys())
+        
+        # Check required parameters for the action
+        action_def = schema["actions"][action]
+        required_params = [p for p, d in action_def.get("parameters", {}).items() if d.get("required")]
+        missing = [p for p in required_params if p not in parameters]
+        if missing:
+            return f"Error: Missing required parameters for '{action}': {', '.join(missing)}\n\nAction Details:\n{json.dumps(action_def, indent=2)}"
 
     tinybot_root = os.environ.get("TINYBOT_ROOT", ".")
     tinybot_src = os.environ.get("TINYBOT_SRC", ".")
@@ -307,6 +318,17 @@ def tool_execute_skill(agent, skill_name, parameters):
     # Try global skills first (in TINYBOT_SRC), then agent-specific skills (in TINYBOT_ROOT)
     skill_file_path_md = os.path.join(tinybot_src, "skills", f"{clean_skill_name}.md")
     skill_file_path_py = os.path.join(tinybot_src, "skills", f"{clean_skill_name}.py")
+    
+    # NEW: Modular directory structures
+    if not os.path.exists(skill_file_path_py):
+        alt_py = os.path.join(tinybot_src, "skills", clean_skill_name, f"{clean_skill_name}.py")
+        if os.path.exists(alt_py):
+            skill_file_path_py = alt_py
+            
+    if not os.path.exists(skill_file_path_md):
+        alt_md = os.path.join(tinybot_src, "skills", clean_skill_name, f"{clean_skill_name}.md")
+        if os.path.exists(alt_md):
+            skill_file_path_md = alt_md
 
     # Check for Python skill first (Python-first architecture)
     if os.path.exists(skill_file_path_py):
@@ -590,7 +612,7 @@ def tool_execute_skill(agent, skill_name, parameters):
                     text = text.replace(f"{{{{{key}}}}}", val_str)
 
                 # Cleanup: If any {{key}} remains, it means the argument was not provided
-                text = re.sub(r"{{.*?}}", "(missing argument)", text)
+                text = re.sub(r"{{.*?}}", "", text)
                 return text
 
             if step_type == "tool":
@@ -891,8 +913,111 @@ def tool_archive_message(agent, file_path):
     return utils.archive_sir_message(file_path)
 
 
+def tool_mcp_call(agent, tool_name, arguments):
+    """
+    Calls an MCP tool by its namespaced name (e.g., 'manifold:search_markets').
+    """
+    from mcp_client import get_mcp_client
+    
+    mcp_client = get_mcp_client(agent.config)
+    if not mcp_client:
+        return "Error: MCP Client not initialized."
+    
+    try:
+        # Use synchronous wrapper
+        result = mcp_client.call_tool(tool_name, arguments)
+        return result
+    except Exception as e:
+        return f"Error executing MCP tool '{tool_name}': {e}"
+
+
+def tool_mcp_get_tool_info(agent, tool_name):
+    """
+    Returns the full JSON schema for a specific MCP tool.
+    """
+    from mcp_client import get_mcp_client
+    mcp_client = get_mcp_client(agent.config)
+    if not mcp_client:
+        return "Error: MCP Client not initialized."
+    return mcp_client.get_tool_info(tool_name)
+
+
+def tool_mcp_list_server_tools(agent, server_name):
+    """
+    Returns a list of tools available on a specific MCP server.
+    """
+    from mcp_client import get_mcp_client
+    mcp_client = get_mcp_client(agent.config)
+    if not mcp_client:
+        return "Error: MCP Client not initialized."
+    
+    tools = mcp_client.get_server_tools(server_name)
+    if not tools:
+        return f"No tools found for server '{server_name}'."
+    
+    output = f"Available tools for server '{server_name}':\n"
+    for t in tools:
+        output += f"- {t['name']}: {t['description']}\n"
+    return output
+
+
 # New: Centralized tool definitions
 ALL_TOOL_DEFINITIONS = {
+    "mcp_list_server_tools": {
+        "type": "function",
+        "function": {
+            "name": "mcp_list_server_tools",
+            "description": "List all available tools for a specific MCP server.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "server_name": {
+                        "type": "string",
+                        "description": "The name of the MCP server (e.g., 'manifold')."
+                    }
+                },
+                "required": ["server_name"]
+            }
+        }
+    },
+    "mcp_get_tool_info": {
+        "type": "function",
+        "function": {
+            "name": "mcp_get_tool_info",
+            "description": "Get the detailed JSON schema (parameters, types) for a specific MCP tool.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tool_name": {
+                        "type": "string",
+                        "description": "The namespaced tool name (e.g., 'server:tool')."
+                    }
+                },
+                "required": ["tool_name"]
+            }
+        }
+    },
+    "mcp_call": {
+        "type": "function",
+        "function": {
+            "name": "mcp_call",
+            "description": "Call an MCP tool from an external server.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tool_name": {
+                        "type": "string",
+                        "description": "The namespaced tool name (e.g., 'server:tool')."
+                    },
+                    "arguments": {
+                        "type": "object",
+                        "description": "The arguments for the tool call."
+                    }
+                },
+                "required": ["tool_name", "arguments"]
+            }
+        }
+    },
     "exec": {
         "type": "function",
         "function": {
@@ -1097,6 +1222,9 @@ ALL_TOOL_DEFINITIONS = {
 
 # New: Centralized tool functions
 ALL_TOOL_FUNCTIONS = {
+    "mcp_list_server_tools": tool_mcp_list_server_tools,
+    "mcp_get_tool_info": tool_mcp_get_tool_info,
+    "mcp_call": tool_mcp_call,
     "exec": tool_exec,
     "read": tool_read,
     "write": tool_write,
@@ -1152,7 +1280,7 @@ def get_dispatcher(agent, tool_names=None):
             dispatcher[name] = lambda query, n=name: ALL_TOOL_FUNCTIONS[n](
                 agent.config, query
             )
-        elif name in ["get_next_message", "send_message", "archive_message"]:
+        elif name in ["get_next_message", "send_message", "archive_message", "mcp_call", "mcp_get_tool_info", "mcp_list_server_tools"]:
             dispatcher[name] = (
                 lambda *args, n=name, **kwargs: ALL_TOOL_FUNCTIONS[n](
                     agent, *args, **kwargs
